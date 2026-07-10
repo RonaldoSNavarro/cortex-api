@@ -1,0 +1,25 @@
+# Build artifacts
+target/
+*/target/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+
+# Maven
+dependency-reduced-pom.xml
+
+# Logs
+*.log
+
+# Test scripts
+test_mcp*.py

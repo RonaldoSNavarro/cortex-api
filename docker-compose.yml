@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  cortex-api:
+    build: .
+    image: cortex-api:latest
+    container_name: cortex-api
+    ports:
+      - "8080:8080"
+    volumes:
+      # Monta o diretório .cortex do host no container
+      # O ProjectRepository salva os projetos em ~/.cortex
+      - ~/.cortex:/root/.cortex
+      # Permite que a API do Cortex acesse todos os projetos para fazer o Bootstrap
+      - F:\Dev\Projetos:/projetos
+      - ./data:/app/data
+    environment:
+      - SPRING_PROFILES_ACTIVE=default
+      - TZ=America/Sao_Paulo
+    restart: unless-stopped
