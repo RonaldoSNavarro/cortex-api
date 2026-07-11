@@ -1,6 +1,8 @@
-﻿target/
+target/
 .idea/
 *.iml
 .classpath
 .project
 .settings/
+scratch_mcp/
+scratch_mcp_node/
