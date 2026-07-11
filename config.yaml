@@ -1,0 +1,13 @@
+---
+projects:
+  F:\Dev\Projetos\cortex: "cortex"
+  f:\Dev\Projetos\cortex\target\test-repo: "test-bootstrap"
+  f:/Dev/Projetos/cortex: "cortex"
+  F:\Dev\Projetos\nforaprazo: "nforaprazo"
+  F:/Dev/Projetos/cortex: "cortex"
+  /projetos/cortex: "cortex"
+  F:/Dev/Projetos/nforaprazo: "nforaprazo"
+  /projetos/nforaprazo: "nforaprazo"
+  f:\Dev\Projetos\nforaprazo: "nforaprazo"
+  /Projetos/consorcio-api: "cortex"
+  f:\Dev\Projetos\consorcio-api: "consorcio-api"
