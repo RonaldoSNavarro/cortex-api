@@ -1,6 +1,6 @@
-# Build artifacts
-target/
-*/target/
+# Build artifacts permitidos agora porque o Dockerfile usa os jars pré-compilados
+# target/
+# */target/
 
 # IDE
 .idea/

@@ -12,10 +12,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.web.servlet.ServletRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import lombok.extern.slf4j.Slf4j;
 
 import java.util.Collections;
 
 @Configuration
+@Slf4j
 public class McpConfig {
 
     @Autowired
@@ -54,7 +56,16 @@ public class McpConfig {
         final java.util.concurrent.ConcurrentHashMap<Object, java.util.concurrent.CompletableFuture<McpSchema.JSONRPCMessage>> pendingResponses = 
             new java.util.concurrent.ConcurrentHashMap<>();
 
+        final java.util.concurrent.atomic.AtomicReference<java.util.function.Function<reactor.core.publisher.Mono<McpSchema.JSONRPCMessage>, reactor.core.publisher.Mono<McpSchema.JSONRPCMessage>>> connectHandlerRef = 
+            new java.util.concurrent.atomic.AtomicReference<>();
+
         HttpServletSseServerTransport transport = new HttpServletSseServerTransport(mapper, "/mcp/sse") {
+            @Override
+            public reactor.core.publisher.Mono<java.lang.Void> connect(java.util.function.Function<reactor.core.publisher.Mono<McpSchema.JSONRPCMessage>, reactor.core.publisher.Mono<McpSchema.JSONRPCMessage>> handler) {
+                connectHandlerRef.set(handler);
+                return super.connect(handler);
+            }
+
             @Override
             public reactor.core.publisher.Mono<Void> sendMessage(McpSchema.JSONRPCMessage message) {
                 try {
@@ -131,6 +142,14 @@ public class McpConfig {
             "    \"file\": { \"type\": \"string\", \"description\": \"Target file path (e.g. .agents/AGENTS.md)\" }\n" +
             "  },\n" +
             "  \"required\": [\"project\", \"file\"]\n" +
+            "}";
+
+        String consolidateSchema = "{\n" +
+            "  \"type\": \"object\",\n" +
+            "  \"properties\": {\n" +
+            "    \"project\": { \"type\": \"string\", \"description\": \"Project ID\" }\n" +
+            "  },\n" +
+            "  \"required\": [\"project\"]\n" +
             "}";
 
         this.mcpServer = McpServer.sync(transport)
@@ -225,6 +244,33 @@ public class McpConfig {
                 }
             )
             .tool(
+                new Tool("consolidate", "Retorna a lista de observações brutas ainda não consolidadas para revisão. A consolidação deve ser acionada automaticamente ao fim de cada sessão e os resultados consolidados devem ser versionados via Git.", consolidateSchema),
+                (argsMap) -> {
+                    try {
+                        String project = (String) argsMap.get("project");
+                        java.util.List<com.cortex.core.MemoryPage> raws = repo.getPendingRaws(project);
+                        
+                        if (raws.isEmpty()) {
+                            return new CallToolResult(Collections.singletonList(new McpSchema.TextContent("Nenhum arquivo bruto pendente de consolidação.")), false);
+                        }
+                        
+                        StringBuilder sb = new StringBuilder();
+                        sb.append("Arquivos brutos pendentes (").append(raws.size()).append("):\n\n");
+                        for (com.cortex.core.MemoryPage page : raws) {
+                            sb.append("ID: ").append(page.getId()).append("\n");
+                            sb.append("Tipo: ").append(page.getType()).append("\n");
+                            sb.append("Data: ").append(page.getCreatedAt()).append("\n");
+                            sb.append("Conteúdo:\n").append(page.getContent()).append("\n");
+                            sb.append("---\n");
+                        }
+                        
+                        return new CallToolResult(Collections.singletonList(new McpSchema.TextContent(sb.toString())), false);
+                    } catch (Exception e) {
+                        return new CallToolResult(Collections.singletonList(new McpSchema.TextContent("Erro na consolidação: " + e.getMessage())), true);
+                    }
+                }
+            )
+            .tool(
                 new Tool("bootstrap", "Inicializa um projeto completo no Cortex com estrutura de diretórios, Skill e registro no config", 
                     "{\n" +
                     "  \"type\": \"object\",\n" +
@@ -285,79 +331,102 @@ public class McpConfig {
             }
             @Override
             protected void doGet(jakarta.servlet.http.HttpServletRequest req, jakarta.servlet.http.HttpServletResponse resp) throws jakarta.servlet.ServletException, java.io.IOException {
-                System.out.println(">>> [GET] URI: " + req.getRequestURI() + " | Query: " + req.getQueryString());
+                log.debug(">>> [GET] URI: {} | Query: {}", req.getRequestURI(), req.getQueryString());
                 transport.service(req, resp);
             }
             @Override
             protected void doPost(jakarta.servlet.http.HttpServletRequest req, jakarta.servlet.http.HttpServletResponse resp) throws jakarta.servlet.ServletException, java.io.IOException {
-                try {
-                    String body = req.getReader().lines().collect(java.util.stream.Collectors.joining(System.lineSeparator()));
-                    System.out.println(">>> [POST] Body: " + body);
-                    
-                    com.fasterxml.jackson.databind.JsonNode jsonNode = mapper.readTree(body);
-                    Object msgId = null;
-                    if (jsonNode.has("id") && jsonNode.has("method")) {
-                        com.fasterxml.jackson.databind.JsonNode idNode = jsonNode.get("id");
-                        if (idNode.isNumber()) {
-                            msgId = idNode.numberValue();
-                        } else if (idNode.isTextual()) {
-                            msgId = idNode.textValue();
+                final jakarta.servlet.AsyncContext asyncContext = req.startAsync();
+                asyncContext.setTimeout(30000); // 30 seconds
+
+                java.util.concurrent.CompletableFuture.runAsync(() -> {
+                    try {
+                        String body = req.getReader().lines().collect(java.util.stream.Collectors.joining(System.lineSeparator()));
+                        log.debug(">>> [POST] Body: {}", body);
+                        
+                        com.fasterxml.jackson.databind.JsonNode jsonNode = mapper.readTree(body);
+                        Object msgId = null;
+                        if (jsonNode.has("id") && jsonNode.has("method")) {
+                            com.fasterxml.jackson.databind.JsonNode idNode = jsonNode.get("id");
+                            if (idNode.isNumber()) {
+                                msgId = idNode.numberValue();
+                            } else if (idNode.isTextual()) {
+                                msgId = idNode.textValue();
+                            }
                         }
-                    }
-                    
-                    io.modelcontextprotocol.spec.McpSchema.JSONRPCMessage message = 
-                        io.modelcontextprotocol.spec.McpSchema.deserializeJsonRpcMessage(mapper, body);
-                    
-                    java.lang.reflect.Field handlerField = io.modelcontextprotocol.server.transport.HttpServletSseServerTransport.class.getDeclaredField("connectHandler");
-                    handlerField.setAccessible(true);
-                    
-                    @SuppressWarnings("unchecked")
-                    java.util.function.Function<reactor.core.publisher.Mono<io.modelcontextprotocol.spec.McpSchema.JSONRPCMessage>, reactor.core.publisher.Mono<io.modelcontextprotocol.spec.McpSchema.JSONRPCMessage>> handler = 
-                        (java.util.function.Function<reactor.core.publisher.Mono<io.modelcontextprotocol.spec.McpSchema.JSONRPCMessage>, reactor.core.publisher.Mono<io.modelcontextprotocol.spec.McpSchema.JSONRPCMessage>>) handlerField.get(transport);
-                    
-                    if (handler == null) {
-                        System.out.println(">>> [POST] ERROR: handler is null!");
-                        resp.setStatus(500);
-                        return;
-                    }
-                    
-                    java.util.concurrent.CompletableFuture<io.modelcontextprotocol.spec.McpSchema.JSONRPCMessage> responseFuture = null;
-                    if (msgId != null) {
-                        responseFuture = new java.util.concurrent.CompletableFuture<>();
-                        pendingResponses.put(msgId, responseFuture);
-                    }
-                    
-                    // Feed the message into the connectHandler
-                    handler.apply(reactor.core.publisher.Mono.just(message)).subscribe();
-                    
-                    if (responseFuture != null) {
+                        
+                        io.modelcontextprotocol.spec.McpSchema.JSONRPCMessage message = 
+                            io.modelcontextprotocol.spec.McpSchema.deserializeJsonRpcMessage(mapper, body);
+                        
+                        java.util.function.Function<reactor.core.publisher.Mono<io.modelcontextprotocol.spec.McpSchema.JSONRPCMessage>, reactor.core.publisher.Mono<io.modelcontextprotocol.spec.McpSchema.JSONRPCMessage>> handler = 
+                            connectHandlerRef.get();
+                        
+                        if (handler == null) {
+                            log.error(">>> [POST] ERROR: connectHandlerRef is null!");
+                            ((jakarta.servlet.http.HttpServletResponse) asyncContext.getResponse()).setStatus(500);
+                            asyncContext.complete();
+                            return;
+                        }
+                        
+                        java.util.concurrent.CompletableFuture<io.modelcontextprotocol.spec.McpSchema.JSONRPCMessage> responseFuture = null;
+                        if (msgId != null) {
+                            responseFuture = new java.util.concurrent.CompletableFuture<>();
+                            pendingResponses.put(msgId, responseFuture);
+                        }
+                        
+                        // Feed the message into the connectHandler
+                        handler.apply(reactor.core.publisher.Mono.just(message)).subscribe();
+                        
+                        if (responseFuture != null) {
+                            final Object finalMsgId = msgId;
+                            responseFuture.orTimeout(15, java.util.concurrent.TimeUnit.SECONDS).whenComplete((resMsg, ex) -> {
+                                try {
+                                    jakarta.servlet.http.HttpServletResponse asyncResp = (jakarta.servlet.http.HttpServletResponse) asyncContext.getResponse();
+                                    if (ex != null) {
+                                        if (ex instanceof java.util.concurrent.TimeoutException) {
+                                            log.warn(">>> [POST] Timeout waiting for response ID: {}", finalMsgId);
+                                            pendingResponses.remove(finalMsgId);
+                                            if (!asyncResp.isCommitted()) {
+                                                asyncResp.setContentType("application/json");
+                                                asyncResp.setCharacterEncoding("UTF-8");
+                                                asyncResp.setStatus(202);
+                                                asyncResp.getWriter().print("{}");
+                                            }
+                                        } else {
+                                            log.error(">>> [POST] Error waiting for response ID: {}", finalMsgId, ex);
+                                            pendingResponses.remove(finalMsgId);
+                                            asyncResp.setStatus(500);
+                                        }
+                                    } else {
+                                        String responseJson = mapper.writeValueAsString(resMsg);
+                                        log.debug(">>> [POST] Captured Response: {}", responseJson);
+                                        asyncResp.setContentType("application/json");
+                                        asyncResp.setCharacterEncoding("UTF-8");
+                                        asyncResp.setStatus(200);
+                                        asyncResp.getWriter().print(responseJson);
+                                    }
+                                } catch (Exception innerEx) {
+                                    log.error(">>> [POST] Exception writing response: {}", innerEx.getMessage(), innerEx);
+                                } finally {
+                                    asyncContext.complete();
+                                }
+                            });
+                        } else {
+                            jakarta.servlet.http.HttpServletResponse asyncResp = (jakarta.servlet.http.HttpServletResponse) asyncContext.getResponse();
+                            asyncResp.setContentType("application/json");
+                            asyncResp.setCharacterEncoding("UTF-8");
+                            asyncResp.setStatus(202);
+                            asyncResp.getWriter().print("{}");
+                            asyncContext.complete();
+                        }
+                    } catch (Exception e) {
+                        log.error(">>> [POST] EXCEPTION: {}", e.getMessage(), e);
                         try {
-                            io.modelcontextprotocol.spec.McpSchema.JSONRPCMessage responseMsg = responseFuture.get(10, java.util.concurrent.TimeUnit.SECONDS);
-                            String responseJson = mapper.writeValueAsString(responseMsg);
-                            System.out.println(">>> [POST] Captured Response: " + responseJson);
-                            resp.setContentType("application/json");
-                            resp.setCharacterEncoding("UTF-8");
-                            resp.setStatus(200);
-                            resp.getWriter().print(responseJson);
-                        } catch (java.util.concurrent.TimeoutException te) {
-                            System.out.println(">>> [POST] Timeout waiting for response ID: " + msgId);
-                            pendingResponses.remove(msgId);
-                            resp.setContentType("application/json");
-                            resp.setCharacterEncoding("UTF-8");
-                            resp.setStatus(202);
-                            resp.getWriter().print("{}");
-                        }
-                    } else {
-                        resp.setContentType("application/json");
-                        resp.setCharacterEncoding("UTF-8");
-                        resp.setStatus(202);
-                        resp.getWriter().print("{}");
+                            ((jakarta.servlet.http.HttpServletResponse) asyncContext.getResponse()).setStatus(500);
+                        } catch (Exception ignore) {}
+                        asyncContext.complete();
                     }
-                } catch (Exception e) {
-                    System.out.println(">>> [POST] EXCEPTION: " + e.getMessage());
-                    e.printStackTrace();
-                    resp.setStatus(500);
-                }
+                });
             }
         };
 

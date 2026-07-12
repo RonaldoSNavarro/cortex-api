@@ -13,8 +13,13 @@ services:
       - ~/.cortex:/root/.cortex
       # Permite que a API do Cortex acesse todos os projetos para fazer o Bootstrap
       - F:\Dev\Projetos:/projetos
-      - ./data:/app/data
+      # Mapeia a pasta SSH para autenticação do Git temporariamente para consertar permissões
+      - ~/.ssh:/tmp/.ssh:ro
     environment:
       - SPRING_PROFILES_ACTIVE=default
       - TZ=America/Sao_Paulo
+      - GIT_AUTHOR_NAME=Ronaldo Navarro
+      - GIT_AUTHOR_EMAIL=navaro.silva@terra.com.br
+      - GIT_REMOTE_URL=git@github.com:RonaldoSNavarro/cortex-memory.git
     restart: unless-stopped
+    entrypoint: [ "sh", "-c", "mkdir -p /root/.ssh && cp -a /tmp/.ssh/* /root/.ssh/ 2>/dev/null || true && chmod 700 /root/.ssh && chmod 600 /root/.ssh/* 2>/dev/null || true && exec java -jar /app/cortex-api.jar" ]

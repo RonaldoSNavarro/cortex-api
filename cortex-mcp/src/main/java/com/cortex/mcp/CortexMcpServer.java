@@ -66,6 +66,14 @@ public class CortexMcpServer implements CommandLineRunner {
                 "  \"required\": [\"project\"]\n" +
                 "}";
 
+            String consolidateSchema = "{\n" +
+                "  \"type\": \"object\",\n" +
+                "  \"properties\": {\n" +
+                "    \"project\": { \"type\": \"string\", \"description\": \"Project ID\" }\n" +
+                "  },\n" +
+                "  \"required\": [\"project\"]\n" +
+                "}";
+
             String writePageSchema = "{\n" +
                 "  \"type\": \"object\",\n" +
                 "  \"properties\": {\n" +
@@ -195,6 +203,33 @@ public class CortexMcpServer implements CommandLineRunner {
                             return new CallToolResult(Collections.singletonList(new McpSchema.TextContent(sb.toString())), false);
                         } catch (Exception e) {
                             return new CallToolResult(Collections.singletonList(new McpSchema.TextContent("Erro na busca: " + e.getMessage())), true);
+                        }
+                    }
+                )
+                .tool(
+                    new Tool("consolidate", "Retorna a lista de observações brutas ainda não consolidadas para revisão. A consolidação deve ser acionada automaticamente ao fim de cada sessão e os resultados consolidados devem ser versionados via Git.", consolidateSchema),
+                    (argsMap) -> {
+                        try {
+                            String project = (String) argsMap.get("project");
+                            java.util.List<com.cortex.core.MemoryPage> raws = repo.getPendingRaws(project);
+                            
+                            if (raws.isEmpty()) {
+                                return new CallToolResult(Collections.singletonList(new McpSchema.TextContent("Nenhum arquivo bruto pendente de consolidação.")), false);
+                            }
+                            
+                            StringBuilder sb = new StringBuilder();
+                            sb.append("Arquivos brutos pendentes (").append(raws.size()).append("):\n\n");
+                            for (com.cortex.core.MemoryPage page : raws) {
+                                sb.append("ID: ").append(page.getId()).append("\n");
+                                sb.append("Tipo: ").append(page.getType()).append("\n");
+                                sb.append("Data: ").append(page.getCreatedAt()).append("\n");
+                                sb.append("Conteúdo:\n").append(page.getContent()).append("\n");
+                                sb.append("---\n");
+                            }
+                            
+                            return new CallToolResult(Collections.singletonList(new McpSchema.TextContent(sb.toString())), false);
+                        } catch (Exception e) {
+                            return new CallToolResult(Collections.singletonList(new McpSchema.TextContent("Erro na consolidação: " + e.getMessage())), true);
                         }
                     }
                 )

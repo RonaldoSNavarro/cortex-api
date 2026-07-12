@@ -73,7 +73,8 @@ private Path getProjectDir(String projectId) {
             throw new IllegalArgumentException("Tipo de memória inválido: " + typeStr);
         }
         
-        String id = java.util.UUID.randomUUID().toString();
+        String dateStr = java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
+        String id = "raw-" + dateStr + "-" + java.util.UUID.randomUUID().toString().substring(0, 4);
         
         Map<String, Object> frontmatter = new LinkedHashMap<>();
         frontmatter.put("id", id);
@@ -86,6 +87,7 @@ private Path getProjectDir(String projectId) {
         yamlString = yamlString + "---\n\n" + content;
                 
         saveRaw(projectId, id + ".md", yamlString);
+        appendLog(projectDir, "ingest | Raw memory criada: " + id);
         return id;
     }
 
@@ -98,6 +100,26 @@ private Path getProjectDir(String projectId) {
                          .filter(Files::isRegularFile)
                          .count();
         }
+    }
+
+    public java.util.List<MemoryPage> getPendingRaws(String projectId) throws IOException {
+        Path projectDir = getProjectDir(projectId);
+        Path rawDir = projectDir.resolve("raw");
+        java.util.List<MemoryPage> rawPages = new java.util.ArrayList<>();
+        if (!Files.exists(rawDir)) return rawPages;
+        
+        try (java.util.stream.Stream<Path> stream = Files.walk(rawDir)) {
+            stream.filter(p -> p.toString().endsWith(".md"))
+                  .filter(Files::isRegularFile)
+                  .forEach(p -> {
+                      try {
+                          rawPages.add(MarkdownParser.parse(p));
+                      } catch (Exception e) {
+                          log.error("Erro ao fazer parse do arquivo raw: " + p + " - " + e.getMessage());
+                      }
+                  });
+        }
+        return rawPages;
     }
 
     public void updatePageStatus(String projectId, String pageId, String newStatus) throws IOException {
@@ -152,7 +174,12 @@ private Path getProjectDir(String projectId) {
             updatePageStatus(projectId, supersedes.trim(), "superseded");
         }
 
-        String id = java.util.UUID.randomUUID().toString();
+        String dateStr = java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
+        String id = dateStr + "-" + java.util.UUID.randomUUID().toString().substring(0, 4);
+        if (tags != null && !tags.isEmpty()) {
+            String mainTag = tags.get(0).toLowerCase().replaceAll("[^a-z0-9]", "-");
+            id = dateStr + "-" + mainTag + "-" + java.util.UUID.randomUUID().toString().substring(0, 4);
+        }
         
         Map<String, Object> fm = new LinkedHashMap<>();
         fm.put("id", id);
@@ -180,7 +207,31 @@ private Path getProjectDir(String projectId) {
             }
         }
         
+        updateIndex(projectDir, id, typeStr, tags);
+        appendLog(projectDir, "write | Página consolidada: " + id + " (substitui: " + supersedes + ")");
+        
+        syncToGit("Auto-consolidado pelo Cortex: " + id);
+        
         return id;
+    }
+
+    private void appendLog(Path projectDir, String message) throws IOException {
+        Path logPath = projectDir.resolve("log.md");
+        String timestamp = java.time.Instant.now().toString();
+        String logEntry = "## [" + timestamp + "] " + message + "\n";
+        Files.writeString(logPath, logEntry, java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+    }
+
+    private void updateIndex(Path projectDir, String id, String typeStr, java.util.List<String> tags) throws IOException {
+        Path indexPath = projectDir.resolve("index.md");
+        String tagStr = tags != null ? String.join(", ", tags) : "sem tags";
+        String entry = "- [" + id + "](" + "pages/" + id + ".md" + ") | Tipo: " + typeStr + " | Tags: " + tagStr + "\n";
+        
+        if (!Files.exists(indexPath)) {
+            String header = "# Índice do Projeto\n\nCatálogo de todas as páginas consolidadas.\n\n";
+            Files.writeString(indexPath, header, java.nio.file.StandardOpenOption.CREATE);
+        }
+        Files.writeString(indexPath, entry, java.nio.file.StandardOpenOption.APPEND);
     }
 
     public java.util.List<MemoryPage> findAll(String projectId) throws IOException {
@@ -272,23 +323,74 @@ private Path getProjectDir(String projectId) {
         java.util.List<String> warnings = new java.util.ArrayList<>();
         java.util.List<MemoryPage> allPages = findAll(projectId);
         
+        java.util.List<MemoryPage> pendingRaws = getPendingRaws(projectId);
+        java.util.Set<String> rawIds = new java.util.HashSet<>();
+        for (MemoryPage p : pendingRaws) {
+            if (p.getId() != null) rawIds.add(p.getId());
+        }
+        
         java.util.Set<String> validIds = new java.util.HashSet<>();
+        java.util.Map<String, java.util.List<String>> tagsToIds = new java.util.HashMap<>();
+        
+        Path projectDir = getProjectDir(projectId);
+        Path indexPath = projectDir.resolve("index.md");
+        String indexContent = Files.exists(indexPath) ? Files.readString(indexPath) : "";
+
         for (MemoryPage page : allPages) {
             if (page.getId() != null) {
                 validIds.add(page.getId());
+                if (!"superseded".equals(page.getStatus()) && !rawIds.contains(page.getId())) {
+                    if (page.getTags() != null && !page.getTags().isEmpty()) {
+                        java.util.List<String> sortedTags = new java.util.ArrayList<>(page.getTags());
+                        java.util.Collections.sort(sortedTags);
+                        String tagKey = String.join(",", sortedTags).toLowerCase();
+                        tagsToIds.computeIfAbsent(tagKey, k -> new java.util.ArrayList<>()).add(page.getId());
+                    }
+                }
             } else {
-                warnings.add("Página encontrada sem ID no YAML (conteúdo: " + 
+                warnings.add("[ESTRUTURAL] Página encontrada sem ID no YAML (conteúdo: " + 
                     (page.getContent() != null && page.getContent().length() > 20 
                     ? page.getContent().substring(0, 20) + "..." : page.getContent()) + ")");
             }
         }
         
+        java.util.regex.Pattern linkPattern = java.util.regex.Pattern.compile("\\[([a-zA-Z0-9_\\-]+)\\]");
+
         for (MemoryPage page : allPages) {
+            if (page.getId() == null) continue;
+            
+            // Verifica supersedes
             String supersedes = page.getSupersedes();
             if (supersedes != null && !supersedes.trim().isEmpty()) {
                 if (!validIds.contains(supersedes.trim())) {
-                    warnings.add("A página ID " + page.getId() + " substitui uma página inexistente: " + supersedes);
+                    warnings.add("[ORPHAN/SUPERSEDE] A página ID " + page.getId() + " substitui uma página inexistente: " + supersedes);
                 }
+            }
+
+            if ("superseded".equals(page.getStatus())) continue;
+            
+            // Verifica Orphans (não está no index.md)
+            if (!indexContent.contains(page.getId()) && !rawIds.contains(page.getId())) {
+                warnings.add("[ORPHAN] A página ativa " + page.getId() + " não consta no index.md");
+            }
+            
+            // Verifica Dangling Links
+            if (page.getContent() != null) {
+                java.util.regex.Matcher m = linkPattern.matcher(page.getContent());
+                while (m.find()) {
+                    String possibleId = m.group(1);
+                    // Ignora se for muito curto, foca no que se parece com ID do Cortex (tem hífen e > 8 chars)
+                    if (possibleId.length() > 8 && possibleId.contains("-") && !validIds.contains(possibleId)) {
+                        warnings.add("[DANGLING LINK] A página " + page.getId() + " cita um ID inexistente: " + possibleId);
+                    }
+                }
+            }
+        }
+        
+        // Verifica Duplicates
+        for (java.util.Map.Entry<String, java.util.List<String>> entry : tagsToIds.entrySet()) {
+            if (entry.getValue().size() > 1) {
+                warnings.add("[DUPLICATE CONTEXT] As páginas a seguir possuem as mesmas tags exatas (" + entry.getKey() + ") e podem precisar de consolidação: " + String.join(", ", entry.getValue()));
             }
         }
         
@@ -388,7 +490,9 @@ private Path getProjectDir(String projectId) {
                         "- Busque por páginas do tipo `rule` ou `gotcha` se achar que pode haver convenções específicas da base.\n\n" +
                         "### 2. Ao Concluir (Capture Context)\n" +
                         "No fim da sua tarefa, se você tropeçou em um bug não documentado (Gotcha), tomou uma decisão técnica arquitetural (Decision) ou descobriu um fato novo importante para agentes futuros (Fact), use a ferramenta `capture`.\n\n" +
-                        "### 3. Promoção de Regras\n" +
+                        "### 3. Consolidação Automática\n" +
+                        "A consolidação deve acontecer de forma automática **sempre ao término de uma sessão** e manual sempre que o usuário solicitar. Chame a ferramenta `consolidate` para ler as notas brutas e transformá-las em páginas curadas usando `write_page`.\n\n" +
+                        "### 4. Promoção de Regras\n" +
                         "Se você criar uma regra ouro (`rule`) e consolidá-la usando `write_page`, lembre-se de promover a regra em seguida usando a tool `promote_rules`.\n\n" +
                         "**Atenção:** Siga a filosofia de que o Cortex é o cérebro persistente. Documente decisões no momento em que ocorrerem.\n";
                 Files.writeString(skillFile, skillContent);
@@ -464,5 +568,46 @@ private Path getProjectDir(String projectId) {
         sb.append("| Regras ativas | ").append(ruleCount).append(" |\n");
 
         return sb.toString();
+    }
+
+    private void syncToGit(String commitMsg) {
+        String authorName = System.getenv("GIT_AUTHOR_NAME");
+        String authorEmail = System.getenv("GIT_AUTHOR_EMAIL");
+        String remoteUrl = System.getenv("GIT_REMOTE_URL");
+        if (authorName == null || authorEmail == null || remoteUrl == null) {
+            log.warn("Git credentials are not fully configured in environment. Skipping git sync.");
+            return;
+        }
+
+        try {
+            File cortexDir = Paths.get(System.getProperty("user.home"), ".cortex").toFile();
+            if (!new File(cortexDir, ".git").exists()) {
+                runCommand(cortexDir, "git", "init");
+                runCommand(cortexDir, "git", "config", "user.name", authorName);
+                runCommand(cortexDir, "git", "config", "user.email", authorEmail);
+                runCommand(cortexDir, "git", "config", "core.sshCommand", "ssh -o StrictHostKeyChecking=no");
+                runCommand(cortexDir, "git", "remote", "add", "origin", remoteUrl);
+            }
+
+            runCommand(cortexDir, "git", "add", ".");
+            runCommand(cortexDir, "git", "commit", "-m", commitMsg);
+            runCommand(cortexDir, "git", "branch", "-M", "main");
+            runCommand(cortexDir, "git", "push", "-u", "origin", "main");
+            log.info("Successfully synced to Git.");
+        } catch (Exception e) {
+            log.error("Failed to sync to Git", e);
+        }
+    }
+
+    private void runCommand(File directory, String... command) throws IOException, InterruptedException {
+        ProcessBuilder pb = new ProcessBuilder(command);
+        pb.directory(directory);
+        Process p = pb.start();
+        int exitCode = p.waitFor();
+        if (exitCode != 0) {
+            String errorMsg = new String(p.getErrorStream().readAllBytes());
+            log.error("Git command failed with exit code " + exitCode + ": " + errorMsg);
+            throw new IOException("Git command failed: " + errorMsg);
+        }
     }
 }
