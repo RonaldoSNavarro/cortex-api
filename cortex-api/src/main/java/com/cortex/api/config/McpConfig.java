@@ -20,10 +20,32 @@ import java.util.Collections;
 @Slf4j
 public class McpConfig {
 
+    static final String CODEX_PROTOCOL_VERSION = "2025-06-18";
+    static final String LEGACY_PROTOCOL_VERSION = "2024-11-05";
+
     @Autowired
     private ProjectRepository repo;
 
     private McpSyncServer mcpServer;
+
+    static String negotiateProtocolVersion(
+            ObjectMapper mapper,
+            String responseJson,
+            String requestedProtocolVersion) throws java.io.IOException {
+        if (!CODEX_PROTOCOL_VERSION.equals(requestedProtocolVersion)) {
+            return responseJson;
+        }
+
+        com.fasterxml.jackson.databind.JsonNode responseNode = mapper.readTree(responseJson);
+        com.fasterxml.jackson.databind.JsonNode protocolVersionNode = responseNode.path("result").path("protocolVersion");
+        if (!LEGACY_PROTOCOL_VERSION.equals(protocolVersionNode.asText())) {
+            return responseJson;
+        }
+
+        ((com.fasterxml.jackson.databind.node.ObjectNode) responseNode.path("result"))
+                .put("protocolVersion", CODEX_PROTOCOL_VERSION);
+        return mapper.writeValueAsString(responseNode);
+    }
 
     @Bean
     public ServletRegistrationBean<jakarta.servlet.http.HttpServlet> mcpServlet() {
@@ -82,6 +104,8 @@ public class McpConfig {
                             java.util.concurrent.CompletableFuture<McpSchema.JSONRPCMessage> future = pendingResponses.remove(resId);
                             if (future != null) {
                                 future.complete(message);
+                                // If we sent it via POST, do not send it over SSE to avoid confusing strict clients
+                                return reactor.core.publisher.Mono.empty();
                             }
                         }
                     }
@@ -332,7 +356,7 @@ public class McpConfig {
             @Override
             protected void doGet(jakarta.servlet.http.HttpServletRequest req, jakarta.servlet.http.HttpServletResponse resp) throws jakarta.servlet.ServletException, java.io.IOException {
                 log.debug(">>> [GET] URI: {} | Query: {}", req.getRequestURI(), req.getQueryString());
-                transport.service(req, resp);
+                transport.service(wrapRequest(req), resp);
             }
             @Override
             protected void doPost(jakarta.servlet.http.HttpServletRequest req, jakarta.servlet.http.HttpServletResponse resp) throws jakarta.servlet.ServletException, java.io.IOException {
@@ -345,6 +369,10 @@ public class McpConfig {
                         log.debug(">>> [POST] Body: {}", body);
                         
                         com.fasterxml.jackson.databind.JsonNode jsonNode = mapper.readTree(body);
+                        final String requestedProtocolVersion =
+                            "initialize".equals(jsonNode.path("method").asText())
+                                ? jsonNode.path("params").path("protocolVersion").asText(null)
+                                : null;
                         Object msgId = null;
                         if (jsonNode.has("id") && jsonNode.has("method")) {
                             com.fasterxml.jackson.databind.JsonNode idNode = jsonNode.get("id");
@@ -399,6 +427,11 @@ public class McpConfig {
                                         }
                                     } else {
                                         String responseJson = mapper.writeValueAsString(resMsg);
+                                        responseJson = negotiateProtocolVersion(
+                                            mapper,
+                                            responseJson,
+                                            requestedProtocolVersion
+                                        );
                                         log.debug(">>> [POST] Captured Response: {}", responseJson);
                                         asyncResp.setContentType("application/json");
                                         asyncResp.setCharacterEncoding("UTF-8");

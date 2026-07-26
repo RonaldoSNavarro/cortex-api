@@ -6,3 +6,14 @@ target/
 .settings/
 scratch_mcp/
 scratch_mcp_node/
+
+# Local diagnostic and reverse-engineering artifacts
+/.codex/
+/Test*.java
+/decompiled.txt
+/*_all.txt
+/*_locals.txt
+/search_locals.txt
+/find_*.py
+/test_mcp*.py
+/test_query_*.py

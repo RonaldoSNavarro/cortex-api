@@ -24,7 +24,7 @@ public class CommandController {
     }
 
     @PostMapping("/execute")
-    @Operation(summary = "Executa um comando", description = "Recebe um comando (ex: bootstrap, handoff) e o executa via Strategy.")
+    @Operation(summary = "Executa um comando", description = "Recebe e executa operações REST do Cortex, incluindo query, capture, write_page, consolidate e promote_rules.")
     public ResponseEntity<CommandResponse> executeCommand(@RequestBody CommandRequest request) throws Exception {
         if (request.getCommand() == null) {
             throw new IllegalArgumentException("Parâmetro 'command' é obrigatório.");

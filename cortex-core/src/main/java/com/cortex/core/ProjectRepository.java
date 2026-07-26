@@ -33,7 +33,10 @@ public class ProjectRepository {
     }
     private final Map<String, CacheEntry> cache = new ConcurrentHashMap<>();
 
-private Path getProjectDir(String projectId) {
+    private Path getProjectDir(String projectId) {
+        if (projectId == null || projectId.trim().isEmpty()) {
+            throw new IllegalArgumentException("projectId cannot be null or empty");
+        }
         return Paths.get(System.getProperty("user.home"), ".cortex", "projects", projectId);
     }
 
