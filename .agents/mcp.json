@@ -1,10 +1,14 @@
 {
   "mcpServers": {
     "cortex": {
+      "type": "sse",
+      "url": "http://localhost:8080/mcp/sse"
+    },
+    "cortex-stdio": {
       "command": "java",
       "args": [
         "-jar",
-        "f:/Dev/Projetos/cortex/cortex-mcp/target/cortex-mcp-1.0-SNAPSHOT.jar"
+        "cortex-mcp/target/cortex-mcp-1.0-SNAPSHOT.jar"
       ]
     }
   }

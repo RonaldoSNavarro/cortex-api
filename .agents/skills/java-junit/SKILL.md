@@ -9,14 +9,14 @@ Your goal is to help me write effective unit tests with JUnit 5, covering both s
 
 ## Project Setup
 
-- Use a standard Maven or Gradle project structure.
+- Use standard Maven project structure.
 - Place test source code in `src/test/java`.
 - Include dependencies for `junit-jupiter-api`, `junit-jupiter-engine`, and `junit-jupiter-params` for parameterized tests.
-- Use build tool commands to run tests: `mvn test` or `gradle test`.
+- Use build tool command to run tests: `mvn test`.
 
 ## Test Structure
 
-- Test classes should have a `Test` suffix, e.g., `CalculatorTest` for a `Calculator` class.
+- Test classes should have a `Test` suffix, e.g., `MarkdownRepositoryTest`.
 - Use `@Test` for test methods.
 - Follow the Arrange-Act-Assert (AAA) pattern.
 - Name tests using a descriptive convention, like `methodName_should_expectedBehavior_when_scenario`.
@@ -27,42 +27,23 @@ Your goal is to help me write effective unit tests with JUnit 5, covering both s
 ## Standard Tests
 
 - Keep tests focused on a single behavior.
-- Avoid testing multiple conditions in one test method.
 - Make tests independent and idempotent (can run in any order).
 - Avoid test interdependencies.
 
 ## Data-Driven (Parameterized) Tests
 
 - Use `@ParameterizedTest` to mark a method as a parameterized test.
-- Use `@ValueSource` for simple literal values (strings, ints, etc.).
-- Use `@MethodSource` to refer to a factory method that provides test arguments as a `Stream`, `Collection`, etc.
-- Use `@CsvSource` for inline comma-separated values.
-- Use `@CsvFileSource` to use a CSV file from the classpath.
-- Use `@EnumSource` to use enum constants.
+- Use `@ValueSource`, `@CsvSource`, or `@MethodSource` for test arguments.
 
 ## Assertions
 
-- Use the static methods from `org.junit.jupiter.api.Assertions` (e.g., `assertEquals`, `assertTrue`, `assertNotNull`).
-- For more fluent and readable assertions, consider using a library like AssertJ (`assertThat(...).is...`).
+- Use static methods from `org.junit.jupiter.api.Assertions`.
 - Use `assertThrows` or `assertDoesNotThrow` to test for exceptions.
-- Group related assertions with `assertAll` to ensure all assertions are checked before the test fails.
-- Use descriptive messages in assertions to provide clarity on failure.
 
 ## Mocking and Isolation
 
-- Use a mocking framework like Mockito to create mock objects for dependencies.
-- Use `@Mock` and `@InjectMocks` annotations from Mockito to simplify mock creation and injection.
-- Use interfaces to facilitate mocking.
+- Use Mockito to create mock objects for dependencies (`@Mock`, `@InjectMocks`).
 
-## Test Organization
-
-- Group tests by feature or component using packages.
-- Use `@Tag` to categorize tests (e.g., `@Tag("fast")`, `@Tag("integration")`).
-- Use `@TestMethodOrder(MethodOrderer.OrderAnnotation.class)` and `@Order` to control test execution order when strictly necessary.
-- Use `@Disabled` to temporarily skip a test method or class, providing a reason.
-- Use `@Nested` to group tests in a nested inner class for better organization and structure.
-
-## Padrões Específicos do Consórcio API
-- **Testes Data-Driven:** Empregue fortemente `@ParameterizedTest` (como `@CsvSource` ou `@EnumSource`) para cobrir todas as transições das máquinas de estado complexas (ex: `StatusCota` com seus 14 estados, `StatusLance`).
-- **Cálculos Financeiros:** Em asserts de cálculo financeiro ou proporções, utilize verificação estrita de `BigDecimal`, garantindo a validação de escalas e do arredondamento (como `RoundingMode.HALF_EVEN`).
-- **Isolamento em Lançamentos COSIF:** Certifique-se de que os testes que validam partidas dobradas financeiras estejam totalmente isolados (ex: mockando serviços externos ou validando o banco em memória para cada teste de persistência).
+## Padrões Específicos do Cortex
+- **Testes de Manipulação de Markdown:** Garanta o isolamento do sistema de arquivos utilizando diretórios temporários (`@TempDir`) nos testes de `cortex-core`.
+- **Testes de Endpoints MCP / REST:** Teste os controladores do `cortex-api` e a serialização/deserialização de mensagens JSON-RPC do MCP.

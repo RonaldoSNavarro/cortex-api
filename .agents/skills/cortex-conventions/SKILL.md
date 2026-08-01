@@ -1,11 +1,11 @@
 ---
 name: cortex-conventions
-description: Regras globais de memória para o projeto Cortex (Automação de Fase 5). Envolve leitura de contexto no começo e escrita de descobertas/regras no final do trabalho usando Cortex MCP.
+description: Regras globais de memória para o projeto Cortex. Envolve leitura de contexto no começo e escrita de descobertas/regras no final do trabalho usando Cortex MCP.
 ---
 
 # Cortex Conventions (Skill Automática)
 
-Você (Antigravity/Claude) está trabalhando em um projeto governado pelo **Cortex**, um sistema de memória e wiki com base em Markdown. 
+Você (Antigravity/Claude/Codex) está trabalhando em um projeto governado pelo **Cortex**, um sistema de memória e wiki com base em Markdown. 
 
 ## Regras de Execução de Tarefa
 
@@ -14,7 +14,7 @@ Sempre que você for iniciar uma nova tarefa ou investigar um bug complexo neste
 ### 1. Inicialização (Read Context)
 Antes de começar a editar arquivos ou fazer planos, use a ferramenta `query` (exposta pelo CortexMcpServer) para buscar conhecimento ativo relevante ao seu objetivo. 
 - Busque por páginas do tipo `rule` ou `gotcha` se achar que pode haver convenções específicas da base.
-- Se o Cortex não estiver rodando via MCP, e se a CLI estiver instalada, use `cortex query --project=consorcio-api <busca>`.
+- Se o Cortex não estiver rodando via MCP, e se a CLI estiver instalada, use `cortex query --project=cortex "sua busca"`.
 
 ### 2. Ao Concluir (Capture Context)
 No fim da sua tarefa, se você tropeçou em um bug não documentado (Gotcha), tomou uma decisão técnica arquitetural (Decision) ou descobriu um fato novo importante para agentes futuros (Fact), use a ferramenta `capture` (exposta pelo CortexMcpServer).

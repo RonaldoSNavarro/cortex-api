@@ -13,14 +13,13 @@ description: 'Ensure that Java types are documented with Javadoc comments and fo
 - Use `@throws` or `@exception` to document exceptions thrown by methods.
 - Use `@see` for references to other types or members.
 - Use `{@inheritDoc}` to inherit documentation from base classes or interfaces.
-  - Unless there is major behavior change, in which case you should document the differences.
 - Use `@param <T>` for type parameters in generic types or methods.
 - Use `{@code}` for inline code snippets.
 - Use `<pre>{@code ... }</pre>` for code blocks.
-- Use `@since` to indicate when the feature was introduced (e.g., version number).
+- Use `@since` to indicate when the feature was introduced.
 - Use `@version` to specify the version of the member.
 - Use `@deprecated` to mark a member as deprecated and provide an alternative.
 
-## Padrões Específicos do Consórcio API
-- Sempre documente a correlação de entidades, métodos e regras de negócio com regulamentações específicas do Banco Central (ex: Circular 3432/2009 e Resolução BCB 285/2023).
-- Ao implementar regras complexas ou críticas (como algoritmos de sorteio, concorrência otimista com `@Version` ou cálculo de restituição), inclua referências no Javadoc para os ADRs em `docs/PROJECT_CONTEXT.md` ou para a documentação técnica pertinente.
+## Padrões Específicos do Cortex
+- Sempre documente a finalidade de serviços de domínio, repositórios de arquivos Markdown e manipuladores de MCP (`capture`, `query`, `write_page`, `promote_rules`, etc.).
+- Ao implementar regras críticas de parsing YAML Frontmatter ou serialização Jackson/MCP, inclua referências no Javadoc explicando as razões técnicas (ex: evitar `FAIL_ON_UNKNOWN_PROPERTIES` para interoperabilidade com clientes MCP Go/Node/Claude Code).

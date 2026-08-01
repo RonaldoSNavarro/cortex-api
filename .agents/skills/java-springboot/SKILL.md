@@ -5,67 +5,34 @@ description: 'Get best practices for developing applications with Spring Boot.'
 
 # Spring Boot Best Practices
 
-Your goal is to help me write high-quality Spring Boot applications by following established best practices.
+Your goal is to help write high-quality Spring Boot applications by following established best practices.
 
 ## Project Setup & Structure
 
-- **Build Tool:** Use Maven (`pom.xml`) or Gradle (`build.gradle`) for dependency management.
-- **Starters:** Use Spring Boot starters (e.g., `spring-boot-starter-web`, `spring-boot-starter-data-jpa`) to simplify dependency management.
-- **Package Structure:** Organize code by feature/domain (e.g., `com.example.app.order`, `com.example.app.user`) rather than by layer (e.g., `com.example.app.controller`, `com.example.app.service`).
+- **Build Tool:** Use Maven (`pom.xml`) for dependency management.
+- **Starters:** Use Spring Boot starters (`spring-boot-starter-web`) to simplify dependency management.
+- **Package Structure:** Organize code by feature/domain (`com.cortex.api`, `com.cortex.core`, `com.cortex.mcp`).
 
 ## Dependency Injection & Components
 
-- **Constructor Injection:** Always use constructor-based injection for required dependencies. This makes components easier to test and dependencies explicit.
+- **Constructor Injection:** Always use constructor-based injection for required dependencies.
 - **Immutability:** Declare dependency fields as `private final`.
-- **Component Stereotypes:** Use `@Component`, `@Service`, `@Repository`, and `@Controller`/`@RestController` annotations appropriately to define beans.
+- **Component Stereotypes:** Use `@Component`, `@Service`, `@Repository`, and `@RestController` appropriately.
 
-## Configuration
+## Configuration & Logging
 
-- **Externalized Configuration:** Use `application.yml` (or `application.properties`) for configuration. YAML is often preferred for its readability and hierarchical structure.
-- **Type-Safe Properties:** Use `@ConfigurationProperties` to bind configuration to strongly-typed Java objects.
-- **Profiles:** Use Spring Profiles (`application-dev.yml`, `application-prod.yml`) to manage environment-specific configurations.
-- **Secrets Management:** Do not hardcode secrets. Use environment variables, or a dedicated secret management tool like HashiCorp Vault or AWS Secrets Manager.
+- **Externalized Configuration:** Use `application.yml` or `application.properties`.
+- **SLF4J:** Use SLF4J with parameterized logging (`logger.info("Processing page {}...", pageName)`).
 
-## Web Layer (Controllers)
+## Web Layer & MCP Transports
 
-- **RESTful APIs:** Design clear and consistent RESTful endpoints.
-- **DTOs (Data Transfer Objects):** Use DTOs to expose and consume data in the API layer. Do not expose JPA entities directly to the client.
-- **Validation:** Use Java Bean Validation (JSR 380) with annotations (`@Valid`, `@NotNull`, `@Size`) on DTOs to validate request payloads.
-- **Error Handling:** Implement a global exception handler using `@ControllerAdvice` and `@ExceptionHandler` to provide consistent error responses.
-
-## Service Layer
-
-- **Business Logic:** Encapsulate all business logic within `@Service` classes.
-- **Statelessness:** Services should be stateless.
-- **Transaction Management:** Use `@Transactional` on service methods to manage database transactions declaratively. Apply it at the most granular level necessary.
-
-## Data Layer (Repositories)
-
-- **Spring Data JPA:** Use Spring Data JPA repositories by extending `JpaRepository` or `CrudRepository` for standard database operations.
-- **Custom Queries:** For complex queries, use `@Query` or the JPA Criteria API.
-- **Projections:** Use DTO projections to fetch only the necessary data from the database.
-
-## Logging
-
-- **SLF4J:** Use the SLF4J API for logging.
-- **Logger Declaration:** `private static final Logger logger = LoggerFactory.getLogger(MyClass.class);`
-- **Parameterized Logging:** Use parameterized messages (`logger.info("Processing user {}...", userId);`) instead of string concatenation to improve performance.
+- **RESTful APIs & SSE:** Implement clean controllers.
+- **MCP SSE Bridge:** Keep Jackson configured with `FAIL_ON_UNKNOWN_PROPERTIES = false` to accept capabilities sent by MCP client SDKs (Go, Node, Python, Claude Code, Antigravity).
 
 ## Testing
 
-- **Unit Tests:** Write unit tests for services and components using JUnit 5 and a mocking framework like Mockito.
-- **Integration Tests:** Use `@SpringBootTest` for integration tests that load the Spring application context.
-- **Test Slices:** Use test slice annotations like `@WebMvcTest` (for controllers) or `@DataJpaTest` (for repositories) to test specific parts of the application in isolation.
-- **Testcontainers:** Consider using Testcontainers for reliable integration tests with real databases, message brokers, etc.
+- **Unit & Integration Tests:** Use `@SpringBootTest` and `@WebMvcTest` with `@TempDir` for clean filesystem assertions.
 
-## Security
-
-- **Spring Security:** Use Spring Security for authentication and authorization.
-- **Password Encoding:** Always encode passwords using a strong hashing algorithm like BCrypt.
-- **Input Sanitization:** Prevent SQL injection by using Spring Data JPA or parameterized queries. Prevent Cross-Site Scripting (XSS) by properly encoding output.
-
-## Padrões Específicos do Consórcio API
-- **Spec-Driven Development (SDD):** A lógica de negócios (`@Service`) deve obrigatoriamente refletir as entidades e agregações descritas na documentação e specs (em `docs/specs/`). A spec é a fonte da verdade.
-- **Concorrência Otimista (Optimistic Locking):** O projeto utiliza mapeamento de concorrência com `@Version` em entidades críticas (Cota, Grupo, etc.). Garanta que as exceções `OptimisticLockException` sejam devidamente tratadas na camada de serviço ou controller com respostas HTTP 409 Conflict (ou retentativas lógicas).
-- **Contabilidade COSIF:** As lógicas transacionais em serviços devem obedecer à regra de Partida Dobrada (natureza débito e crédito) em entidades de log ou de lançamentos de conta.
-- **Jobs Críticos:** As rotinas automatizadas (`@Scheduled`), como `VerificadorInadimplenciaJob` e `LgpdAnonymizationJob`, devem processar volumes elevados empregando paginação e gerindo as transações (via `@Transactional`) em *batches* apropriados, não em uma única grande transação.
+## Padrões Específicos do Cortex
+- **Integração MCP SSE:** O endpoint `/mcp/sse` deve manter o comportamento de ponte para publicar respostas JSON-RPC no corpo das requisições POST.
+- **Gerenciamento de Arquivos:** Operações de escrita de arquivos em `cortex-core` devem ser thread-safe e garantir que metadados no YAML Frontmatter permaneçam consistentes.
