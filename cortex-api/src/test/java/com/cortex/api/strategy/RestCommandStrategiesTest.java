@@ -4,6 +4,7 @@ import com.cortex.api.model.CommandRequest;
 import com.cortex.core.MemoryPage;
 import com.cortex.core.MemoryType;
 import com.cortex.core.ProjectRepository;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -111,5 +112,26 @@ class RestCommandStrategiesTest {
         );
 
         assertTrue(exception.getMessage().contains("file"));
+    }
+
+    @Test
+    void shouldDeserializeQueryAlias() throws Exception {
+        CommandRequest request = new CommandRequest();
+        request.setTerms(null);
+
+        ObjectMapper mapper = new ObjectMapper();
+        String json = "{\"project\":\"cortex\",\"command\":\"query\",\"query\":\"MCP test\"}";
+        CommandRequest parsed = mapper.readValue(json, CommandRequest.class);
+
+        assertEquals("MCP test", parsed.getTerms());
+    }
+
+    @Test
+    void shouldDeserializeTermsField() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        String json = "{\"project\":\"cortex\",\"command\":\"query\",\"terms\":\"MCP test\"}";
+        CommandRequest parsed = mapper.readValue(json, CommandRequest.class);
+
+        assertEquals("MCP test", parsed.getTerms());
     }
 }

@@ -1,5 +1,6 @@
 package com.cortex.api.model;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
 import io.swagger.v3.oas.annotations.media.Schema;
 import java.util.List;
 import lombok.Data;
@@ -26,6 +27,7 @@ public class CommandRequest {
     private String targetAgent;
 
     @Schema(description = "Termos de busca (necessário para query)", example = "MCP")
+    @JsonAlias("query")
     private String terms;
 
     @Schema(description = "Tipo de memória (necessário para capture e write_page)", example = "gotcha")

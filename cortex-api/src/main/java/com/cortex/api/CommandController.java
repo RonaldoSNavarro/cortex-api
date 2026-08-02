@@ -3,6 +3,8 @@ package com.cortex.api;
 import com.cortex.api.model.CommandRequest;
 import com.cortex.api.model.CommandResponse;
 import com.cortex.api.strategy.CommandStrategy;
+import com.cortex.core.CortexConfig;
+import com.cortex.core.CortexConfigManager;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.http.ResponseEntity;
@@ -17,6 +19,7 @@ import java.util.stream.Collectors;
 public class CommandController {
 
     private final Map<String, CommandStrategy> strategies;
+    private final CortexConfigManager configManager = new CortexConfigManager();
 
     public CommandController(List<CommandStrategy> strategyList) {
         this.strategies = strategyList.stream()
@@ -37,7 +40,13 @@ public class CommandController {
                 String inferredProject = root.substring(root.lastIndexOf('/') + 1);
                 request.setProject(inferredProject);
             } else {
-                throw new IllegalArgumentException("Parâmetro 'project' é obrigatório.");
+                String inferred = inferDefaultProject();
+                if (inferred != null) {
+                    request.setProject(inferred);
+                } else {
+                    throw new IllegalArgumentException(
+                        "Parâmetro 'project' é obrigatório. Projetos disponíveis: " + getAvailableProjects());
+                }
             }
         }
 
@@ -54,6 +63,40 @@ public class CommandController {
     public ResponseEntity<CommandResponse> handleIllegalArgument(IllegalArgumentException ex) {
         return ResponseEntity.status(org.springframework.http.HttpStatus.BAD_REQUEST)
                 .body(new CommandResponse("error", ex.getMessage()));
+    }
+
+    @ExceptionHandler(org.springframework.http.converter.HttpMessageNotReadableException.class)
+    public ResponseEntity<CommandResponse> handleJsonParseError(
+            org.springframework.http.converter.HttpMessageNotReadableException ex) {
+        String msg = "Erro de parsing JSON. Verifique o encoding (UTF-8) e a estrutura do payload.";
+        if (ex.getMessage() != null && ex.getMessage().contains("UTF-8")) {
+            msg += " Dica: o corpo da requisição contém bytes não-UTF-8 (ex: caracteres acentuados via PowerShell Windows).";
+        }
+        return ResponseEntity.badRequest().body(new CommandResponse("error", msg));
+    }
+
+    private String inferDefaultProject() {
+        try {
+            CortexConfigManager mgr = new CortexConfigManager();
+            CortexConfig config = mgr.loadConfig();
+            java.util.Set<String> uniqueProjects = new java.util.HashSet<>(config.getProjects().values());
+            if (uniqueProjects.size() == 1) {
+                return uniqueProjects.iterator().next();
+            }
+        } catch (Exception e) {
+            // Config not available, can't infer
+        }
+        return null;
+    }
+
+    private String getAvailableProjects() {
+        try {
+            CortexConfigManager mgr = new CortexConfigManager();
+            CortexConfig config = mgr.loadConfig();
+            return String.join(", ", new java.util.TreeSet<>(config.getProjects().values()));
+        } catch (Exception e) {
+            return "(não foi possível carregar config)";
+        }
     }
 
     @ExceptionHandler(Exception.class)

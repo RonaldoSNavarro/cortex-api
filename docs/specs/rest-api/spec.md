@@ -46,3 +46,10 @@ Content-Type: application/json
 
 - Testes unitários validam as estratégias REST e os campos encaminhados ao repositório.
 - A validação de integração confirma `query` contra o container Docker em execução.
+
+## Aliases e Tolerância
+
+- O campo `terms` aceita o alias `query` (útil para clientes que confundem o nome do parâmetro).
+- Quando `project` é omitido e há exatamente 1 projeto configurado em `config.yaml`, o projeto é inferido automaticamente.
+- Erros de parsing JSON (ex: encoding não-UTF-8) retornam HTTP 400 com mensagem descritiva.
+
