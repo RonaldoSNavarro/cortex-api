@@ -1,47 +1,30 @@
 # Contexto do Projeto (Cortex)
 
 ## Visão Geral
-O Cortex é uma plataforma única que combina o padrão *LLM Wiki* (Karpathy) com o padrão *ai-memory* (Akita), projetado para ser servido como um servidor MCP para agentes (como Claude Code e Antigravity) e suportando captura automática via hooks.
+O **Cortex** é uma plataforma de memória contínua e wiki viva que combina o padrão *LLM Wiki* (Karpathy) com o padrão *ai-memory* (Akita). O sistema foi construído em **Java 25** e **Spring Boot 4.1.0** e atua como servidor MCP integrado (HTTP SSE no endpoint `/mcp/sse` e stdio) e API REST unificada (`POST /api/execute`).
 
 Ele atua em dois papéis principais:
-1. **Wiki de conhecimento**: uma base de conhecimento em markdown mantida pela própria IA (sintetiza, cura páginas, indexa).
-2. **Memória de agente de código**: captura contínua de decisões, fatos, regras e gotchas durante sessões de desenvolvimento, permitindo handoff entre diferentes agentes sem perda de contexto.
+1. **Wiki de Conhecimento**: uma base em Markdown mantida e enriquecida por agentes de IA (sintetiza, cura páginas, indexa referências cruzadas via wikilinks e monitora dependências).
+2. **Memória de Longo Prazo para Agentes de Código**: captura contínua de decisões, fatos, regras e gotchas durante sessões de desenvolvimento (Google Antigravity, Claude Code, OpenAI Codex), permitindo handoff cirúrgico sem perda de contexto.
 
-## Escopo do MVP
-- Armazenamento 100% em arquivos markdown (sem banco de dados ou infraestrutura externa).
-- Busca textual simples (grep/keyword).
-- Servidor MCP em Java (stdio) expondo ferramentas essenciais.
-- CLI Java para operações manuais (init, ingest, query, lint, consolidate).
-- Hooks para Claude Code (SessionStart, Stop, PreCompact) e Antigravity.
-- Isolamento de escopo por projeto, via diretório de wiki isolado.
-- Promoção de regras duráveis para os arquivos de agentes (CLAUDE.md / AGENTS.md).
+---
 
-## Fora do Escopo do MVP (Evolução Futura)
-- Busca híbrida (embeddings/vetores).
-- Banco de dados (SQLite FTS5, Lucene).
-- Interface Web de navegação.
-- Multiusuário/Autenticação.
-- Retenção/Decay automático de memórias.
-- Sincronização remota/nuvem.
+## Capacidades Implementadas
+- **Armazenamento 100% em Markdown**: Arquivos simples legíveis por humanos e versionados no Git.
+- **Motor de Busca Lexical In-Memory (BM25)**: Ranking ponderado ($k_1=1.2, b=0.75$), tokenização CamelCase, filtros facetados combináveis (`type:`, `tags:`, `status:`) e snippets contextuais.
+- **Grafo de Conhecimento & Wikilinks**: Referências bidirecionais `[[link]]`, índice de backlinks e análise preditiva de impacto em páginas dependentes quando uma página antiga é substituída (`supersedes`).
+- **Cache Reativo via Java NIO WatchService & Virtual Threads**: Sincronização em tempo real do índice e grafo em threads virtuais do Java 25 (`Thread.ofVirtual()`).
+- **Smart Synthesizer**: Agrupamento automático de notas brutas em clusters temáticos na ferramenta `consolidate`.
+- **Linting Semântico**: Detecção de *dangling wikilinks* e débitos de consolidação.
+- **Observabilidade & Stats**: Dashboard e métricas de saúde da memória (`stats`).
+- **Servidor MCP SSE com Bridging**: Suporte total a clientes estritos com resposta JSON-RPC no corpo do HTTP POST e `FAIL_ON_UNKNOWN_PROPERTIES = false`.
+- **API REST Unificada**: Endpoint `POST /api/execute` suportando todos os comandos.
+- **CLI Java**: Interface de terminal com Picocli 4.7.x.
+
+---
 
 ## Arquitetura em Camadas
-1. **Agentes de IA** (Claude Code, Antigravity)
-2. **Camada de Captura** (Hooks automáticos e CLI manual)
-3. **Servidor MCP Java** (Exposição de ferramentas: capture, query, consolidate, write_page, etc.)
-4. **Armazenamento** (Wiki baseada em arquivos `.md`, fonte da verdade)
-
-## Roadmap Incremental Sugerido
-O projeto deve ser construído nas seguintes fases para garantir validação progressiva:
-- **Fase 0 — Esqueleto:** Estrutura de diretórios, `schema.md`, CLI `init/ingest/query` operando só em arquivos (sem MCP).
-- **Fase 1 — Servidor MCP:** Expor `capture/query/lint` via stdio e testar com Claude Code apontando para ele.
-- **Fase 2 — Hooks (Básico):** `SessionStart` injetando contexto e `Stop` capturando o resumo bruto.
-- **Fase 3 — Consolidação Assistida:** Ferramenta `consolidate` + `write_page` operacionais.
-- **Fase 4 — Regras Duráveis:** `promote_rule` gravando em `CLAUDE.md`/`AGENTS.md`.
-- **Fase 5 — Antigravity SDK:** Replicar hooks para suportar o agente Google, testando o handoff.
-- **Fase 6 (Futuro):** Busca avançada (SQLite/Lucene) e UI web.
-
-## Riscos e Decisões em Aberto
-- **Antigravity SDK:** Sendo uma plataforma muito recente, os eventos de ciclo de vida (hooks) podem diferir da especificação e exigir adaptação.
-- **Loop de Hooks `Stop`:** Um agente instruído a "resumir a sessão ao parar" pode gerar chamadas MCP infinitas. A prevenção com flags como `stop_hook_active` é crítica na implementação.
-- **Conflito de Projetos:** Decidir na Fase 0 se o `<project-id>` é derivado do hash do caminho ou se deve ser nomeado manualmente pelo usuário no comando `cortex init`.
-- **Consolidação Manual vs Automática:** No MVP a consolidação é sob demanda (via comando do usuário). A consolidação automática traz risco de degradação da base se não for acompanhada de validação humana.
+1. **Agentes de IA** (Google Antigravity, Claude Code, OpenAI Codex)
+2. **Camada de Transporte & Protocolos** (MCP SSE em `/mcp/sse`, MCP stdio, REST em `/api/execute`, CLI)
+3. **Núcleo de Inteligência e Domínio** (`cortex-core`: BM25, KnowledgeGraph, WatchService, SmartSynthesizer)
+4. **Armazenamento e Persistência** (`~/.cortex/projects/<project-id>/` em arquivos Markdown versionados no Git)

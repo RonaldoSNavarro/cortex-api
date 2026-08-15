@@ -6,8 +6,11 @@ O **Cortex** é um sistema de memória ativa e wiki pessoal em formato Markdown,
 
 ## 🛠️ Comandos de Desenvolvimento
 
-### Build e Compilação (Maven / Java 21)
+### Build e Compilação (Maven / Java 25)
 ```bash
+# Definir JAVA_HOME para Java 25
+export JAVA_HOME="/path/to/jdk-25" # ou $env:JAVA_HOME = "C:\Program Files\Java\jdk-25.0.4"
+
 # Compilar e gerar JARs de todos os módulos
 mvn clean package -DskipTests
 
@@ -15,7 +18,7 @@ mvn clean package -DskipTests
 mvn test
 ```
 
-### Execução da Aplicação (Spring Boot + MCP SSE Server)
+### Execução da Aplicação (Spring Boot 4.1.0 + MCP SSE Server)
 ```bash
 # Subir via Docker Compose (Porta 8080)
 docker-compose up -d --build cortex-api
@@ -26,8 +29,11 @@ mvn spring-boot:run -pl cortex-api
 
 ### CLI do Cortex (`cortex-cli`)
 ```bash
-# Consultar memória do projeto
-java -jar cortex-cli/target/cortex-cli-1.0-SNAPSHOT.jar query --project=cortex "sua busca"
+# Consultar memória do projeto com ranking BM25
+java -jar cortex-cli/target/cortex-cli-1.0-SNAPSHOT.jar query --project=cortex "type:rule jackson"
+
+# Inspecionar dashboard e métricas de saúde
+java -jar cortex-cli/target/cortex-cli-1.0-SNAPSHOT.jar stats --project=cortex
 
 # Promover regras consolidadas para a IDE/Agentes
 java -jar cortex-cli/target/cortex-cli-1.0-SNAPSHOT.jar promote --project=cortex --file=.agents/AGENTS.md
@@ -37,24 +43,26 @@ java -jar cortex-cli/target/cortex-cli-1.0-SNAPSHOT.jar promote --project=cortex
 
 ## 🏗️ Arquitetura do Repositório
 
-- **`cortex-core`**: Domínio central, manipuladores de arquivos Markdown, parsing de YAML frontmatter, indexação de memória e motor de busca.
-- **`cortex-api`**: Aplicação Spring Boot que expõe a API REST e o servidor **Model Context Protocol (MCP)** via SSE (`http://localhost:8080/mcp/sse`).
-- **`cortex-cli`**: Interface de linha de comando (PicoCLI) para operações diretas de memória e promoção de regras.
+- **`cortex-core`**: Domínio central, motor de busca lexical BM25 em memória, grafo de conhecimento (wikilinks `[[target]]` e backlinks), cache reativo via Java NIO `WatchService` e clustering semântico de notas brutas.
+- **`cortex-api`**: Aplicação Spring Boot 4.1.0 que expõe a API REST (`/api/execute`) e o servidor **Model Context Protocol (MCP)** via SSE (`http://localhost:8080/mcp/sse`).
+- **`cortex-cli`**: Interface de linha de comando (PicoCLI 4.7.x) para operações diretas de memória.
 - **`cortex-mcp`**: Servidor MCP independente empacotado para execução em transporte stdio.
 
 ---
 
 ## 🔌 Ferramentas MCP Disponíveis (`cortex`)
 
-Quando o agente está conectado ao Cortex MCP Server (via SSE ou stdio), ele deve utilizar as seguintes ferramentas:
+Quando o agente está conectado ao Cortex MCP Server (via SSE ou stdio), ele deve utilizar as seguintes 9 ferramentas:
 
-1. `query`: Pesquisa na base de memória do projeto por termos, tags ou tipos (`rule`, `decision`, `gotcha`, `fact`).
-2. `capture`: Registra uma nova descoberta ou dado bruto na memória.
-3. `write_page`: Escreve/atualiza uma página curada na wiki do projeto.
-4. `promote_rules`: Injeta as regras ativas consolidadas da memória no arquivo de contexto do projeto (`.agents/AGENTS.md` ou `AGENTS.md`).
-5. `lint`: Executa diagnósticos de integridade na memória (links quebrados, frontmatter ausente).
-6. `bootstrap`: Inicializa a estrutura da base de memória em um novo projeto.
-7. `handoff`: Gera relatórios sintéticos de transferência de contexto para a próxima sessão de trabalho.
+1. `query`: Pesquisa lexical BM25 na base de memória por termos, tags ou filtros facetados (`type:rule tags:mcp status:active`).
+2. `capture`: Registra uma nova descoberta ou dado bruto na memória em `raw/`.
+3. `write_page`: Escreve/atualiza uma página curada na wiki do projeto com suporte a wikilinks `[[target]]`.
+4. `consolidate`: Agrupa notas brutas pendentes por clusters temáticos e orienta a síntese pelo agente.
+5. `stats`: Retorna dashboard markdown com métricas de saúde, nós e conexões do grafo e top tags.
+6. `promote_rules`: Injeta as regras ativas consolidadas da memória no arquivo de contexto do projeto (`.agents/AGENTS.md` ou `AGENTS.md`).
+7. `lint`: Executa diagnósticos de integridade na memória (links quebrados, *dangling wikilinks*).
+8. `bootstrap`: Inicializa a estrutura da base de memória em um novo projeto.
+9. `handoff`: Gera relatórios sintéticos de transferência de contexto para a próxima sessão de trabalho.
 
 ---
 
