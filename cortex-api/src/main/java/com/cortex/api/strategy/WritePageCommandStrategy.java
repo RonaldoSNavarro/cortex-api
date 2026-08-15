@@ -25,9 +25,8 @@ public class WritePageCommandStrategy implements CommandStrategy {
     public String execute(CommandRequest request) throws Exception {
         String type = requireText(request.getType(), "type");
         String content = requireText(request.getContent(), "content");
-        String id = repository.writePage(request.getProject(), type, request.getTags(), request.getSupersedes(),
+        return repository.writePage(request.getProject(), type, request.getTags(), request.getSupersedes(),
             request.getConsumedRawIds(), content);
-        return "Página salva com sucesso. ID: " + id;
     }
 
     private String requireText(String value, String field) {

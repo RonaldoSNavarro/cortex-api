@@ -12,13 +12,15 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.web.servlet.ServletRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import lombok.extern.slf4j.Slf4j;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.Collections;
 
 @Configuration
-@Slf4j
 public class McpConfig {
+
+    private static final Logger log = LoggerFactory.getLogger(McpConfig.class);
 
     static final String CODEX_PROTOCOL_VERSION = "2025-06-18";
     static final String LEGACY_PROTOCOL_VERSION = "2024-11-05";
@@ -81,7 +83,7 @@ public class McpConfig {
         final java.util.concurrent.atomic.AtomicReference<java.util.function.Function<reactor.core.publisher.Mono<McpSchema.JSONRPCMessage>, reactor.core.publisher.Mono<McpSchema.JSONRPCMessage>>> connectHandlerRef = 
             new java.util.concurrent.atomic.AtomicReference<>();
 
-        HttpServletSseServerTransport transport = new HttpServletSseServerTransport(mapper, "/mcp/sse") {
+        HttpServletSseServerTransport transport = new HttpServletSseServerTransport(mapper, "/mcp/sse", "/mcp/sse") {
             @Override
             public reactor.core.publisher.Mono<java.lang.Void> connect(java.util.function.Function<reactor.core.publisher.Mono<McpSchema.JSONRPCMessage>, reactor.core.publisher.Mono<McpSchema.JSONRPCMessage>> handler) {
                 connectHandlerRef.set(handler);
@@ -133,7 +135,8 @@ public class McpConfig {
             "  \"type\": \"object\",\n" +
             "  \"properties\": {\n" +
             "    \"project\": { \"type\": \"string\", \"description\": \"Project ID\" },\n" +
-            "    \"terms\": { \"type\": \"string\", \"description\": \"Termos de busca\" }\n" +
+            "    \"terms\": { \"type\": \"string\", \"description\": \"Termos de busca (suporta filtros facetados: type:rule tags:mcp status:active)\" },\n" +
+            "    \"limit\": { \"type\": \"integer\", \"description\": \"Limite maximo de resultados (padrao 10)\" }\n" +
             "  },\n" +
             "  \"required\": [\"project\", \"terms\"]\n" +
             "}";
@@ -151,7 +154,7 @@ public class McpConfig {
             "  \"properties\": {\n" +
             "    \"project\": { \"type\": \"string\", \"description\": \"Project ID\" },\n" +
             "    \"type\": { \"type\": \"string\", \"description\": \"Memory type (fact, decision, rule, etc)\" },\n" +
-            "    \"content\": { \"type\": \"string\", \"description\": \"Conteudo consolidado em Markdown\" },\n" +
+            "    \"content\": { \"type\": \"string\", \"description\": \"Conteudo consolidado em Markdown (suporta [[wikilinks]])\" },\n" +
             "    \"tags\": { \"type\": \"array\", \"items\": { \"type\": \"string\" }, \"description\": \"Tags para busca (opcional)\" },\n" +
             "    \"supersedes\": { \"type\": \"string\", \"description\": \"ID da página antiga a ser substituída (opcional)\" },\n" +
             "    \"consumed_raw_ids\": { \"type\": \"array\", \"items\": { \"type\": \"string\" }, \"description\": \"IDs dos arquivos raw consumidos nesta consolidação para exclusão (opcional)\" }\n" +
@@ -169,6 +172,15 @@ public class McpConfig {
             "}";
 
         String consolidateSchema = "{\n" +
+            "  \"type\": \"object\",\n" +
+            "  \"properties\": {\n" +
+            "    \"project\": { \"type\": \"string\", \"description\": \"Project ID\" },\n" +
+            "    \"topic\": { \"type\": \"string\", \"description\": \"Topico ou tag opcional para consolidar apenas um cluster especifico\" }\n" +
+            "  },\n" +
+            "  \"required\": [\"project\"]\n" +
+            "}";
+
+        String statsSchema = "{\n" +
             "  \"type\": \"object\",\n" +
             "  \"properties\": {\n" +
             "    \"project\": { \"type\": \"string\", \"description\": \"Project ID\" }\n" +
@@ -193,7 +205,7 @@ public class McpConfig {
                 }
             )
             .tool(
-                new Tool("write_page", "Escreve uma página curada na wiki, consolidando contexto bruto", writePageSchema),
+                new Tool("write_page", "Escreve uma página curada na wiki, consolidando contexto bruto com suporte a [[wikilinks]]", writePageSchema),
                 (argsMap) -> {
                     try {
                         String project = (String) argsMap.get("project");
@@ -201,21 +213,21 @@ public class McpConfig {
                         String content = (String) argsMap.get("content");
                         String supersedes = (String) argsMap.get("supersedes");
                         
-                        java.util.List<String> tags = null;
-                        if (argsMap.containsKey("tags")) tags = (java.util.List<String>) argsMap.get("tags");
+                        @SuppressWarnings("unchecked")
+                        java.util.List<String> tags = argsMap.containsKey("tags") ? (java.util.List<String>) argsMap.get("tags") : null;
                         
-                        java.util.List<String> consumedRawIds = null;
-                        if (argsMap.containsKey("consumed_raw_ids")) consumedRawIds = (java.util.List<String>) argsMap.get("consumed_raw_ids");
+                        @SuppressWarnings("unchecked")
+                        java.util.List<String> consumedRawIds = argsMap.containsKey("consumed_raw_ids") ? (java.util.List<String>) argsMap.get("consumed_raw_ids") : null;
                         
-                        String id = repo.writePage(project, type, tags, supersedes, consumedRawIds, content);
-                        return new CallToolResult(Collections.singletonList(new McpSchema.TextContent("Página salva com sucesso. ID: " + id)), false);
+                        String message = repo.writePage(project, type, tags, supersedes, consumedRawIds, content);
+                        return new CallToolResult(Collections.singletonList(new McpSchema.TextContent(message)), false);
                     } catch (Exception e) {
                         return new CallToolResult(Collections.singletonList(new McpSchema.TextContent("Erro ao escrever página: " + e.getMessage())), true);
                     }
                 }
             )
             .tool(
-                new Tool("lint", "Verifica a saúde da base do Cortex, detectando referências inválidas.", lintSchema),
+                new Tool("lint", "Verifica a saúde da base do Cortex, detectando referências inválidas, links quebrados e conflitos.", lintSchema),
                 (argsMap) -> {
                     try {
                         String project = (String) argsMap.get("project");
@@ -244,22 +256,22 @@ public class McpConfig {
                 }
             )
             .tool(
-                new Tool("query", "Busca informacoes na memoria do projeto", querySchema),
+                new Tool("query", "Busca informacoes na memoria do projeto usando ranking BM25 e filtros facetados (type:, tags:, status:)", querySchema),
                 (argsMap) -> {
                     try {
                         String project = (String) argsMap.get("project");
                         String terms = (String) argsMap.get("terms");
-                        java.util.List<com.cortex.core.MemoryPage> results = repo.search(project, terms);
+                        int limit = argsMap.containsKey("limit") && argsMap.get("limit") instanceof Number
+                                ? ((Number) argsMap.get("limit")).intValue() : 10;
+                        
+                        java.util.List<com.cortex.core.SearchResult> results = repo.searchLexical(project, terms, limit);
                         if (results.isEmpty()) {
                             return new CallToolResult(Collections.singletonList(new McpSchema.TextContent("Nenhum resultado encontrado para: " + terms)), false);
                         }
                         StringBuilder sb = new StringBuilder();
-                        sb.append("Resultados para '").append(terms).append("':\n\n");
-                        for (com.cortex.core.MemoryPage page : results) {
-                            sb.append("ID: ").append(page.getId()).append("\n");
-                            sb.append("Tipo: ").append(page.getType()).append("\n");
-                            sb.append("Conteúdo:\n").append(page.getContent()).append("\n");
-                            sb.append("---\n");
+                        sb.append(String.format("Resultados da busca lexical (BM25) para '%s' (%d encontrados):\n\n", terms, results.size()));
+                        for (com.cortex.core.SearchResult res : results) {
+                            sb.append(res.toFormattedSummary()).append("\n\n");
                         }
                         return new CallToolResult(Collections.singletonList(new McpSchema.TextContent(sb.toString())), false);
                     } catch (Exception e) {
@@ -268,29 +280,27 @@ public class McpConfig {
                 }
             )
             .tool(
-                new Tool("consolidate", "Retorna a lista de observações brutas ainda não consolidadas para revisão. A consolidação deve ser acionada automaticamente ao fim de cada sessão e os resultados consolidados devem ser versionados via Git.", consolidateSchema),
+                new Tool("consolidate", "Retorna notas brutas pendentes agrupadas em clusters temáticos para guiar a síntese curada via write_page.", consolidateSchema),
                 (argsMap) -> {
                     try {
                         String project = (String) argsMap.get("project");
-                        java.util.List<com.cortex.core.MemoryPage> raws = repo.getPendingRaws(project);
-                        
-                        if (raws.isEmpty()) {
-                            return new CallToolResult(Collections.singletonList(new McpSchema.TextContent("Nenhum arquivo bruto pendente de consolidação.")), false);
-                        }
-                        
-                        StringBuilder sb = new StringBuilder();
-                        sb.append("Arquivos brutos pendentes (").append(raws.size()).append("):\n\n");
-                        for (com.cortex.core.MemoryPage page : raws) {
-                            sb.append("ID: ").append(page.getId()).append("\n");
-                            sb.append("Tipo: ").append(page.getType()).append("\n");
-                            sb.append("Data: ").append(page.getCreatedAt()).append("\n");
-                            sb.append("Conteúdo:\n").append(page.getContent()).append("\n");
-                            sb.append("---\n");
-                        }
-                        
-                        return new CallToolResult(Collections.singletonList(new McpSchema.TextContent(sb.toString())), false);
+                        String topic = (String) argsMap.get("topic");
+                        String report = repo.consolidateReport(project, topic);
+                        return new CallToolResult(Collections.singletonList(new McpSchema.TextContent(report)), false);
                     } catch (Exception e) {
                         return new CallToolResult(Collections.singletonList(new McpSchema.TextContent("Erro na consolidação: " + e.getMessage())), true);
+                    }
+                }
+            )
+            .tool(
+                new Tool("stats", "Retorna métricas de saúde, taxa de consolidação, distribuição de tags e densidade do grafo do projeto", statsSchema),
+                (argsMap) -> {
+                    try {
+                        String project = (String) argsMap.get("project");
+                        com.cortex.core.CortexStats stats = repo.getStats(project);
+                        return new CallToolResult(Collections.singletonList(new McpSchema.TextContent(stats.toMarkdownSummary())), false);
+                    } catch (Exception e) {
+                        return new CallToolResult(Collections.singletonList(new McpSchema.TextContent("Erro ao obter estatísticas: " + e.getMessage())), true);
                     }
                 }
             )
@@ -355,7 +365,7 @@ public class McpConfig {
             }
             @Override
             protected void doGet(jakarta.servlet.http.HttpServletRequest req, jakarta.servlet.http.HttpServletResponse resp) throws jakarta.servlet.ServletException, java.io.IOException {
-                log.debug(">>> [GET] URI: {} | Query: {}", req.getRequestURI(), req.getQueryString());
+                log.info(">>> [GET] URI: {} | Query: {}", req.getRequestURI(), req.getQueryString());
                 transport.service(wrapRequest(req), resp);
             }
             @Override
@@ -366,7 +376,7 @@ public class McpConfig {
                 java.util.concurrent.CompletableFuture.runAsync(() -> {
                     try {
                         String body = req.getReader().lines().collect(java.util.stream.Collectors.joining(System.lineSeparator()));
-                        log.debug(">>> [POST] Body: {}", body);
+                        log.info(">>> [POST] Body: {}", body);
                         
                         com.fasterxml.jackson.databind.JsonNode jsonNode = mapper.readTree(body);
                         final String requestedProtocolVersion =

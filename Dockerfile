@@ -1,5 +1,5 @@
-FROM eclipse-temurin:21-jre-alpine
-RUN apk add --no-cache git openssh-client
+FROM eclipse-temurin:25-jdk
+RUN apt-get update && apt-get install -y git openssh-client && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
 # Copiamos o JAR já compilado localmente na máquina host para contornar problemas de DNS/SSL no Docker

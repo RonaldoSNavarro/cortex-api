@@ -22,7 +22,8 @@ import java.util.concurrent.Callable;
                 LintCommand.class,
                 PromoteCommand.class,
                 BootstrapCommand.class,
-                HandoffCommand.class
+                HandoffCommand.class,
+                StatsCommand.class
         })
 public class CortexCommand implements Callable<Integer>, CommandLineRunner {
 

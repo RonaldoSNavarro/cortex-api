@@ -26,16 +26,14 @@ public class QueryCommandStrategy implements CommandStrategy {
     @Override
     public String execute(CommandRequest request) throws Exception {
         String terms = requireText(request.getTerms(), "terms");
-        List<MemoryPage> results = repository.search(request.getProject(), terms);
+        List<com.cortex.core.SearchResult> results = repository.searchLexical(request.getProject(), terms, 20);
         if (results.isEmpty()) {
             return "Nenhum resultado encontrado para: " + terms;
         }
 
-        StringBuilder output = new StringBuilder("Resultados para '").append(terms).append("':\n\n");
-        for (MemoryPage page : results) {
-            output.append("ID: ").append(page.getId()).append("\n");
-            output.append("Tipo: ").append(page.getType()).append("\n");
-            output.append("Conteúdo:\n").append(page.getContent()).append("\n---\n");
+        StringBuilder output = new StringBuilder("Resultados da busca lexical (BM25) para '").append(terms).append("':\n\n");
+        for (com.cortex.core.SearchResult res : results) {
+            output.append(res.toFormattedSummary()).append("\n\n");
         }
         return output.toString();
     }

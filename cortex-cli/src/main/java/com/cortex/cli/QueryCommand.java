@@ -25,25 +25,16 @@ public class QueryCommand implements Callable<Integer> {
 
     @Override
     public Integer call() throws Exception {
-        
-        java.util.List<com.cortex.core.MemoryPage> results = repo.search(projectId, terms);
+        java.util.List<com.cortex.core.SearchResult> results = repo.searchLexical(projectId, terms, 10);
         
         if (results.isEmpty()) {
             System.out.println("Nenhum resultado encontrado para '" + terms + "' no projeto " + projectId);
             return 0;
         }
 
-        System.out.println("Resultados para '" + terms + "' no projeto " + projectId + ":\n");
-        for (com.cortex.core.MemoryPage page : results) {
-            System.out.println("ID: " + page.getId() + " | Tipo: " + page.getType());
-            String preview = page.getContent();
-            if (preview != null) {
-                preview = preview.replaceAll("\n", " ");
-                if (preview.length() > 100) {
-                    preview = preview.substring(0, 100) + "...";
-                }
-                System.out.println("Trecho: " + preview);
-            }
+        System.out.println("Resultados da busca lexical (BM25) para '" + terms + "' no projeto " + projectId + ":\n");
+        for (com.cortex.core.SearchResult res : results) {
+            System.out.println(res.toFormattedSummary());
             System.out.println("-".repeat(50));
         }
         

@@ -1,30 +1,30 @@
 package com.cortex.api.strategy;
 
 import com.cortex.api.model.CommandRequest;
-import com.cortex.core.MemoryPage;
+import com.cortex.core.CortexStats;
 import com.cortex.core.ProjectRepository;
-import java.util.List;
 import org.springframework.stereotype.Component;
 
-/** Returns raw memories that still require curation through the REST command API. */
+/** Returns health metrics and statistics of the project knowledge base through the REST command API. */
 @Component
-public class ConsolidateCommandStrategy implements CommandStrategy {
+public class StatsCommandStrategy implements CommandStrategy {
 
     private final ProjectRepository repository;
 
-    public ConsolidateCommandStrategy(ProjectRepository repository) {
+    public StatsCommandStrategy(ProjectRepository repository) {
         this.repository = repository;
     }
 
     /** {@inheritDoc} */
     @Override
     public String getCommandName() {
-        return "consolidate";
+        return "stats";
     }
 
     /** {@inheritDoc} */
     @Override
     public String execute(CommandRequest request) throws Exception {
-        return repository.consolidateReport(request.getProject(), request.getTopic());
+        CortexStats stats = repository.getStats(request.getProject());
+        return stats.toMarkdownSummary();
     }
 }

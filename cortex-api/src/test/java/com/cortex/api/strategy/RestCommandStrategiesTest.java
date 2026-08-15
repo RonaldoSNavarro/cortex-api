@@ -1,11 +1,14 @@
 package com.cortex.api.strategy;
 
 import com.cortex.api.model.CommandRequest;
+import com.cortex.core.CortexStats;
 import com.cortex.core.MemoryPage;
 import com.cortex.core.MemoryType;
 import com.cortex.core.ProjectRepository;
+import com.cortex.core.SearchResult;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -32,7 +35,8 @@ class RestCommandStrategiesTest {
         page.setId("page-1");
         page.setType(MemoryType.FACT);
         page.setContent("MCP is available over REST.");
-        when(repository.search("cortex", "MCP")).thenReturn(List.of(page));
+        SearchResult sr = new SearchResult(page, 2.5, "MCP is available over REST.", List.of("mcp"));
+        when(repository.searchLexical("cortex", "MCP", 20)).thenReturn(List.of(sr));
 
         CommandRequest request = new CommandRequest();
         request.setProject("cortex");
@@ -73,7 +77,7 @@ class RestCommandStrategiesTest {
     @Test
     void writePage_shouldForwardCurationFields() throws Exception {
         when(repository.writePage(eq("cortex"), eq("gotcha"), any(), eq("old-page"), any(), eq("New page")))
-            .thenReturn("page-2");
+            .thenReturn("Página salva com sucesso. ID: page-2");
         CommandRequest request = new CommandRequest();
         request.setProject("cortex");
         request.setType("gotcha");
@@ -91,14 +95,28 @@ class RestCommandStrategiesTest {
     }
 
     @Test
-    void consolidate_shouldReportNoPendingRawMemories() throws Exception {
-        when(repository.getPendingRaws("cortex")).thenReturn(List.of());
+    void consolidate_shouldCallConsolidateReport() throws Exception {
+        when(repository.consolidateReport("cortex", null)).thenReturn("Nenhuma memória raw pendente para consolidar.");
         CommandRequest request = new CommandRequest();
         request.setProject("cortex");
 
         String output = new ConsolidateCommandStrategy(repository).execute(request);
 
-        assertEquals("Nenhum arquivo bruto pendente de consolidação.", output);
+        assertEquals("Nenhuma memória raw pendente para consolidar.", output);
+    }
+
+    @Test
+    void stats_shouldReturnSummary() throws Exception {
+        CortexStats stats = new CortexStats("cortex", 5, 4, 1, 2, Map.of("rule", 2), Map.of("mcp", 3), 4, 3, Map.of("base", 2));
+        when(repository.getStats("cortex")).thenReturn(stats);
+
+        CommandRequest request = new CommandRequest();
+        request.setProject("cortex");
+
+        String output = new StatsCommandStrategy(repository).execute(request);
+
+        assertTrue(output.contains("Métricas e Saúde do Cérebro"));
+        assertTrue(output.contains("cortex"));
     }
 
     @Test
@@ -116,9 +134,6 @@ class RestCommandStrategiesTest {
 
     @Test
     void shouldDeserializeQueryAlias() throws Exception {
-        CommandRequest request = new CommandRequest();
-        request.setTerms(null);
-
         ObjectMapper mapper = new ObjectMapper();
         String json = "{\"project\":\"cortex\",\"command\":\"query\",\"query\":\"MCP test\"}";
         CommandRequest parsed = mapper.readValue(json, CommandRequest.class);
