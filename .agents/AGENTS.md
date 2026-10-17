@@ -19,3 +19,13 @@ Siga obrigatoriamente as premissas de Karpathy (LLM Wiki) e Akita (ai-memory):
 2. **Consolidação em vez de Recuperação de Fragmentos**: A IA não deve recuperar fragmentos isolados de logs brutos. A IA deve ler logs brutos, processá-los e reescrever páginas de wiki coerentes.
 3. **Índices Simples**: Para buscas, prefira abordagens simples e diretas como arquivos `index.md`, `log.md`, ou buscas textuais (FTS5). Se um banco vetorial for absolutamente necessário, ele deve agir APENAS como um índice que aponta para o ID do arquivo (1 vetor = 1 arquivo inteiro), preservando a leitura do front-matter e do documento completo pelo LLM.
 4. **Sem Infraestrutura Desnecessária**: Evite sobrecarregar o usuário com dependências (bancos de dados vetoriais, containers extras) a menos que a escala exija. Mantenha o sistema "KISS".
+
+## Fluxo de desenvolvimento — SDD
+
+Este projeto segue **Spec Driven Development**: toda mudança de comportamento nasce de uma spec
+em `specs/NNN-nome.md`, **antes** do código. As regras, a convenção de nomes e o **índice de
+specs** (que é o changelog do projeto) estão em `specs/README.md` — leia-o antes de implementar.
+
+- **Sem spec, sem código.** Se o pedido muda o que o sistema faz, o primeiro entregável é a spec.
+- Critérios de aceite (`CA-n`) são afirmações **verificáveis**; testes citam o número no nome.
+- Spec e implementação são revisadas no **mesmo PR**.
