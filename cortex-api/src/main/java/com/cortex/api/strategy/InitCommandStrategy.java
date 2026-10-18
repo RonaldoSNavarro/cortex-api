@@ -5,10 +5,22 @@ import com.cortex.core.ProjectRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+/**
+ * Estratégia REST para inicialização básica do diretório de projeto.
+ */
 @Component
 public class InitCommandStrategy implements CommandStrategy {
+
+    private final ProjectRepository repo;
+
+    public InitCommandStrategy() {
+        this(null);
+    }
+
     @Autowired
-    private ProjectRepository repo;
+    public InitCommandStrategy(ProjectRepository repo) {
+        this.repo = repo;
+    }
 
     @Override
     public String getCommandName() { return "init"; }

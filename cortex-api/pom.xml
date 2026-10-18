@@ -51,6 +51,13 @@
             <version>${project.version}</version>
         </dependency>
 
+        <!-- Cortex MCP (shared ObjectMapper, schemas, and tool handlers) -->
+        <dependency>
+            <groupId>com.cortex</groupId>
+            <artifactId>cortex-mcp</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
         <!-- Test -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -66,6 +73,7 @@
                 <artifactId>spring-boot-maven-plugin</artifactId>
                 <executions>
                     <execution>
+                        <id>repackage</id>
                         <goals>
                             <goal>repackage</goal>
                         </goals>

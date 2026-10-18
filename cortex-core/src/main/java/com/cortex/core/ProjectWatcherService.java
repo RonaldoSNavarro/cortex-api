@@ -11,8 +11,8 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Reactive file-system watcher using Java 25 Virtual Threads and NIO WatchService.
- * Automatically keeps InMemoryLexicalIndex and KnowledgeGraph synchronized in real-time.
+ * Monitor reativo do sistema de arquivos utilizando Threads Virtuais do Java 25 e NIO WatchService.
+ * Mantém o índice léxico BM25 e o grafo de conhecimento sincronizados em tempo real com o disco.
  */
 @Service
 public class ProjectWatcherService {
@@ -24,7 +24,7 @@ public class ProjectWatcherService {
     private final Map<WatchKey, String> watchKeyToProject = new ConcurrentHashMap<>();
     private volatile boolean running = true;
 
-    public void registerProject(String projectId, Path projectDir, InMemoryLexicalIndex index, KnowledgeGraph graph) {
+    public synchronized void registerProject(String projectId, Path projectDir, InMemoryLexicalIndex index, KnowledgeGraph graph) {
         if (projectId == null || projectDir == null || !Files.exists(projectDir)) return;
         if (projectWatchers.containsKey(projectId)) return;
 
@@ -70,7 +70,7 @@ public class ProjectWatcherService {
                                 if (kind == StandardWatchEventKinds.ENTRY_CREATE || kind == StandardWatchEventKinds.ENTRY_MODIFY) {
                                     handleFileUpdate(fullPath, index, graph);
                                 } else if (kind == StandardWatchEventKinds.ENTRY_DELETE) {
-                                    String id = filename.toString().replace(".md", "");
+                                    String id = extractPageIdFromFilename(filename.toString());
                                     index.removePage(id);
                                     graph.removePage(id);
                                     log.debug("Watcher: removida página [{}] do projeto [{}]", id, pId);
@@ -91,6 +91,15 @@ public class ProjectWatcherService {
         } catch (Exception e) {
             log.warn("Não foi possível registrar WatchService para [{}]: {}", projectId, e.getMessage());
         }
+    }
+
+    public static String extractPageIdFromFilename(String filename) {
+        if (filename == null) return "";
+        return filename.endsWith(".md") ? filename.substring(0, filename.length() - 3) : filename;
+    }
+
+    public int getActiveWatcherCount() {
+        return projectWatchers.size();
     }
 
     private void registerDir(WatchService watchService, Path dir, String projectId) {

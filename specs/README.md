@@ -57,4 +57,9 @@ Este arquivo é, além das regras, o **índice** — e o índice é o changelog 
 
 | Spec | Título | Status | Testes |
 |---|---|---|---|
-| 001 | <título da primeira spec> | Rascunho | — |
+| [001](001-estabilidade-transporte-mcp.md) | Falhas de protocolo, corrupção assíncrona e colisão de sessões no transporte HTTP/SSE do MCP | Implementada | `Spec001EstabilidadeTransporteMcpTest` |
+| [002](002-git-sync-assincrono-e-unificacao-mcp.md) | Bloqueio síncrono de git push nas escritas da wiki e divergência entre servidores MCP HTTP e Stdio | Implementada | `Spec002GitSyncAssincronoTest`, `Spec002UnificacaoMcpTest` |
+| [003](003-alinhamento-docker-e-config-clientes.md) | Mapeamento de volume Docker e resolução de caminhos restritos a G:\Dev\Projetos | Implementada | `Spec003AlinhamentoDockerCaminhosTest` |
+| [004](004-seguranca-integridade-e-git-core.md) | Corrupção em promote_rules, vulnerabilidade de path traversal, bloqueio de subprocesso Git e inconsistências de formatação Markdown/YAML no core | Implementada | `Spec004SegurancaIntegridadeGitCoreTest` |
+| [005](005-concorrencia-indices-watcher-e-ciclo-de-vida.md) | Condições de corrida em CortexConfigManager, ProjectWatcherService, índices em memória e ausência de shutdown gracioso de recursos | Implementada | `Spec005ConcorrenciaIndicesWatcherTest` |
+| [006](006-alinhamento-cli-docker-hardening-e-padroes-spring.md) | Divergência de contratos na CLI, imagem Docker com JDK completo e ausência de padronização de injeção por construtor e Javadoc | Implementada | `Spec006AlinhamentoCliDockerPadroesTest` |

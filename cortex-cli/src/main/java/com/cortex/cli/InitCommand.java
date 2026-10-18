@@ -3,26 +3,36 @@ package com.cortex.cli;
 import com.cortex.core.CortexConfig;
 import com.cortex.core.CortexConfigManager;
 import com.cortex.core.ProjectRepository;
-import org.springframework.stereotype.Component;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
-import java.io.IOException;
+
 import java.util.concurrent.Callable;
 
+/**
+ * Comando CLI para inicializar o Cortex e registrar novos projetos.
+ */
 @Component
 @Command(name = "init", description = "Inicializa o Cortex e um projeto.")
 public class InitCommand implements Callable<Integer> {
 
-    @Autowired
-    private ProjectRepository repo;
-
+    private final ProjectRepository repo;
 
     @Option(names = {"--project"}, description = "Project ID")
     private String projectId;
 
     @Option(names = {"--path"}, description = "Project Path")
     private String projectPath;
+
+    public InitCommand() {
+        this(null);
+    }
+
+    @Autowired
+    public InitCommand(ProjectRepository repo) {
+        this.repo = repo;
+    }
 
     @Override
     public Integer call() throws Exception {
