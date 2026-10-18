@@ -29,3 +29,26 @@ specs** (que é o changelog do projeto) estão em `specs/README.md` — leia-o a
 - **Sem spec, sem código.** Se o pedido muda o que o sistema faz, o primeiro entregável é a spec.
 - Critérios de aceite (`CA-n`) são afirmações **verificáveis**; testes citam o número no nome.
 - Spec e implementação são revisadas no **mesmo PR**.
+
+<!-- BEGIN CORTEX RULES -->
+# Regras Promovidas do Projeto Cortex
+
+## Rule [20261018-160513-sdd-2181]
+# Padrão Spec Driven Development (SDD) e Regime TDD Estrito
+
+O repositório Cortex adota formalmente o padrão **Spec Driven Development (SDD)** definido em `.agents/skills/skill-sdd` e documentado no índice de especificações `specs/README.md`.
+
+## Regras Obrigatórias:
+1. **Sem Spec, Sem Código**: Toda mudança de comportamento deve obrigatoriamente nascer de uma spec em `specs/NNN-nome.md` antes de qualquer linha de código de produção ser escrita.
+2. **Critérios de Aceite Verificáveis (CA-n)**: Toda spec define critérios de aceite atômicos e auditáveis (`CA-1`, `CA-2`, etc.).
+3. **Regime TDD Estrito**: Cada critério `CA-n` deve possuir testes de contrato correspondentes em `src/test/java/contract/SpecNNNTituloTest.java` seguindo o ciclo Red-Green-Refactor.
+4. **Unidade de Revisão**: A especificação, os testes de contrato e o código de produção são revisados e integrados no mesmo pull request / commit.
+
+## Rule [7b949291-b728-4292-b2bf-419d4e7d8e24]
+O Cortex foi atualizado para rejeitar ativamente padrões de RAG tradicional (Retrieval-Augmented Generation) que utilizam particionamento de texto (chunking).
+
+Ficou estabelecido, inspirado pelas implementações de Andrej Karpathy (LLM Wiki) e Fábio Akita (ai-memory), que a unidade atômica de memória é o arquivo Markdown legível. A inteligência do sistema reside em **consolidar as informações através de leitura e re-escrita ativas** (mantendo arquivos coerentes), e não em retalhar arquivos e buscar vetores de fatias de texto opacas.
+
+Qualquer banco vetorial adicionado futuramente deverá atuar puramente como um índice de página cheia (1 vetor de documento completo aponta para 1 ID de arquivo), preservando a leitura posterior por LLMs do front-matter original e do arquivo completo no disco.
+
+<!-- END CORTEX RULES -->
