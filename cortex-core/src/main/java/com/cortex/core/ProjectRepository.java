@@ -13,6 +13,8 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -49,6 +51,9 @@ public class ProjectRepository {
 
     @Value("${cortex.git.command-timeout-seconds:15}")
     private long gitCommandTimeoutSeconds = 15;
+
+    @Value("${cortex.git.stale-lock-timeout-seconds:60}")
+    private long staleLockTimeoutSeconds = 60;
 
     private Path containerProjectsRoot = Paths.get("/projetos");
 
@@ -117,11 +122,56 @@ public class ProjectRepository {
     }
 
     public long getGitCommandTimeoutSeconds() {
+        String sysProp = System.getProperty("cortex.git.command-timeout-seconds");
+        if (sysProp != null && !sysProp.isBlank()) {
+            try {
+                return Long.parseLong(sysProp.trim());
+            } catch (NumberFormatException ignored) {
+            }
+        }
         return gitCommandTimeoutSeconds;
     }
 
     public void setGitCommandTimeoutSeconds(long gitCommandTimeoutSeconds) {
         this.gitCommandTimeoutSeconds = gitCommandTimeoutSeconds;
+    }
+
+    /**
+     * Retorna o tempo limite em segundos para considerar um arquivo de lock do Git (.git/index.lock) obsoleto.
+     * Avalia prioritariamente a system property {@code cortex.git.stale-lock-timeout-seconds}.
+     *
+     * @return tempo em segundos (padrão 60s)
+     */
+    public long getStaleLockTimeoutSeconds() {
+        String sysProp = System.getProperty("cortex.git.stale-lock-timeout-seconds");
+        if (sysProp != null && !sysProp.isBlank()) {
+            try {
+                return Long.parseLong(sysProp.trim());
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return staleLockTimeoutSeconds;
+    }
+
+    /**
+     * Configura o tempo limite em segundos para expiração de stale locks do Git.
+     *
+     * @param staleLockTimeoutSeconds tempo em segundos
+     */
+    public void setStaleLockTimeoutSeconds(long staleLockTimeoutSeconds) {
+        this.staleLockTimeoutSeconds = staleLockTimeoutSeconds;
+    }
+
+    /**
+     * Retorna o diretório raiz do Cortex local onde reside o repositório Git central (.cortex).
+     *
+     * @return diretório base do Cortex
+     */
+    public File getCortexDir() {
+        if (baseProjectsDir != null && baseProjectsDir.getParent() != null) {
+            return baseProjectsDir.getParent().toFile();
+        }
+        return Paths.get(System.getProperty("user.home"), ".cortex").toFile();
     }
 
     public void setGitSyncHandler(BiConsumer<String, String> gitSyncHandler) {
@@ -1037,7 +1087,92 @@ public class ProjectRepository {
         return System.getenv(envKey);
     }
 
-    void syncToGit(String commitMsg) {
+    /**
+     * Inspeciona preventivamente e remove o arquivo {@code .git/index.lock} caso sua idade
+     * seja superior ao limiar configurado (stale lock). Preserva locks ativos recentes.
+     *
+     * @param gitRepoDir repositório Git local a verificar
+     * @param thresholdSeconds limiar em segundos para considerar o lock como órfão
+     * @return {@code true} se um lock órfão foi detectado e removido com sucesso; {@code false} caso contrário
+     */
+    public boolean cleanStaleGitIndexLock(File gitRepoDir, long thresholdSeconds) {
+        if (gitRepoDir == null || !gitRepoDir.exists()) {
+            return false;
+        }
+        Path lockPath = gitRepoDir.toPath().resolve(".git").resolve("index.lock");
+        if (!Files.exists(lockPath)) {
+            return false;
+        }
+        try {
+            BasicFileAttributes attrs = Files.readAttributes(lockPath, BasicFileAttributes.class);
+            Instant lastModified = attrs.lastModifiedTime().toInstant();
+            Duration age = Duration.between(lastModified, Instant.now());
+            if (age.getSeconds() >= thresholdSeconds) {
+                try {
+                    Files.deleteIfExists(lockPath);
+                    log.warn("Stale Git lock file detected (age: {}s >= threshold: {}s). Successfully removed: {}",
+                            age.getSeconds(), thresholdSeconds, lockPath);
+                    return true;
+                } catch (IOException e) {
+                    log.error("Failed to delete stale Git lock file {}: {}", lockPath, e.getMessage());
+                    return false;
+                }
+            } else {
+                log.debug("Active Git lock file detected (age: {}s < threshold: {}s). Preserving: {}",
+                        age.getSeconds(), thresholdSeconds, lockPath);
+                return false;
+            }
+        } catch (NoSuchFileException e) {
+            return false;
+        } catch (IOException e) {
+            log.warn("Could not read attributes for Git lock file {}: {}", lockPath, e.getMessage());
+            return false;
+        }
+    }
+
+    private boolean isLockOlderThan(Path lockPath, long thresholdSeconds) {
+        try {
+            BasicFileAttributes attrs = Files.readAttributes(lockPath, BasicFileAttributes.class);
+            Instant lastModified = attrs.lastModifiedTime().toInstant();
+            Duration age = Duration.between(lastModified, Instant.now());
+            return age.getSeconds() >= thresholdSeconds;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * Executa comando Git com recuperação reativa transparente caso ocorra colisão de
+     * {@code index.lock: File exists} com idade superior ao timeout de comando configurado.
+     *
+     * @param directory diretório de trabalho onde o comando será executado
+     * @param command comando e argumentos a executar
+     * @return saída padrão e de erro do comando Git executado
+     * @throws IOException se o comando falhar sem recuperação ou por erro de I/O
+     * @throws InterruptedException se o processo for interrompido
+     */
+    public String runGitCommandWithLockRecovery(File directory, String... command) throws IOException, InterruptedException {
+        try {
+            return runCommandWithOutput(directory, command);
+        } catch (IOException e) {
+            if (e.getMessage() != null && e.getMessage().contains("index.lock") && e.getMessage().contains("File exists")) {
+                Path lockPath = directory.toPath().resolve(".git").resolve("index.lock");
+                if (Files.exists(lockPath) && isLockOlderThan(lockPath, getGitCommandTimeoutSeconds())) {
+                    log.warn("Reactive recovery: removing stale lock file after Git failure: {}", lockPath);
+                    try {
+                        Files.deleteIfExists(lockPath);
+                    } catch (IOException ex) {
+                        log.error("Failed to delete lock file during reactive recovery: {}", ex.getMessage());
+                        throw e;
+                    }
+                    return runCommandWithOutput(directory, command);
+                }
+            }
+            throw e;
+        }
+    }
+
+    public void syncToGit(String commitMsg) {
         if (!isGitSyncEnabled()) {
             return;
         }
@@ -1047,9 +1182,15 @@ public class ProjectRepository {
         if (authorName == null || authorEmail == null || remoteUrl == null) {
             return;
         }
+        if (WINDOWS_DRIVE_PATTERN.matcher(remoteUrl).matches()) {
+            remoteUrl = Paths.get(remoteUrl).toUri().toString();
+        }
+        if (remoteUrl.startsWith("file:/") && !remoteUrl.startsWith("file:///")) {
+            remoteUrl = "file:///" + remoteUrl.substring(6);
+        }
 
         try {
-            File cortexDir = Paths.get(System.getProperty("user.home"), ".cortex").toFile();
+            File cortexDir = getCortexDir();
             if (!new File(cortexDir, ".git").exists()) {
                 runCommand(cortexDir, "git", "init");
                 runCommand(cortexDir, "git", "config", "user.name", authorName);
@@ -1058,13 +1199,22 @@ public class ProjectRepository {
                 runCommand(cortexDir, "git", "remote", "add", "origin", remoteUrl);
             }
 
-            runCommand(cortexDir, "git", "add", ".");
-            String status = runCommandWithOutput(cortexDir, "git", "status", "--porcelain");
-            if (!status.trim().isEmpty()) {
-                runCommand(cortexDir, "git", "commit", "-m", commitMsg);
+            Path lockPath = cortexDir.toPath().resolve(".git").resolve("index.lock");
+            if (Files.exists(lockPath)) {
+                boolean cleaned = cleanStaleGitIndexLock(cortexDir, getStaleLockTimeoutSeconds());
+                if (!cleaned && Files.exists(lockPath)) {
+                    log.warn("Git lock file .git/index.lock is currently active (recent). Skipping Git sync to avoid collision.");
+                    return;
+                }
             }
-            runCommand(cortexDir, "git", "branch", "-M", "main");
-            runCommand(cortexDir, "git", "push", "-u", "origin", "main");
+
+            runGitCommandWithLockRecovery(cortexDir, "git", "add", ".");
+            String status = runGitCommandWithLockRecovery(cortexDir, "git", "status", "--porcelain");
+            if (!status.trim().isEmpty()) {
+                runGitCommandWithLockRecovery(cortexDir, "git", "commit", "-m", commitMsg);
+            }
+            runGitCommandWithLockRecovery(cortexDir, "git", "branch", "-M", "main");
+            runGitCommandWithLockRecovery(cortexDir, "git", "push", "-u", "origin", "main");
             log.info("Successfully synced to Git.");
         } catch (Exception e) {
             log.error("Failed to sync to Git: {}", e.getMessage());
@@ -1075,6 +1225,9 @@ public class ProjectRepository {
         ProcessBuilder pb = new ProcessBuilder(command);
         pb.directory(directory);
         pb.redirectErrorStream(true);
+        pb.environment().put("GIT_TERMINAL_PROMPT", "0");
+        pb.environment().put("GIT_ASKPASS", "");
+        pb.environment().put("SSH_ASKPASS", "");
         Process p = pb.start();
 
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
@@ -1085,11 +1238,16 @@ public class ProjectRepository {
             }
         });
 
-        boolean completed = p.waitFor(gitCommandTimeoutSeconds, TimeUnit.SECONDS);
+        long timeout = getGitCommandTimeoutSeconds();
+        boolean completed = p.waitFor(timeout, TimeUnit.SECONDS);
         if (!completed) {
+            try {
+                p.descendants().forEach(ProcessHandle::destroyForcibly);
+            } catch (Exception ignored) {
+            }
             p.destroyForcibly();
             readerThread.interrupt();
-            throw new IOException("Git command timed out after " + gitCommandTimeoutSeconds + "s: " + String.join(" ", command));
+            throw new IOException("Git command timed out after " + timeout + "s: " + String.join(" ", command));
         }
         readerThread.join(2000);
 

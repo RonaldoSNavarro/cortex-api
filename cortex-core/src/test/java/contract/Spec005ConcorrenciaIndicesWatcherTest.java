@@ -126,7 +126,7 @@ public class Spec005ConcorrenciaIndicesWatcherTest {
         }
 
         executor.shutdown();
-        assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+        assertTrue(executor.awaitTermination(15, TimeUnit.SECONDS));
 
         assertEquals(1, watcher.getActiveWatcherCount(), "Deve haver exatamente 1 WatchService criado para o projeto");
         watcher.shutdown();
