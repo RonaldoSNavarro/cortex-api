@@ -2,6 +2,9 @@ package com.cortex.api.model;
 
 import io.swagger.v3.oas.annotations.media.Schema;
 
+/**
+ * Modelo de resposta padronizado para execução de comandos via REST.
+ */
 @Schema(description = "Resposta da execução de um comando")
 public class CommandResponse {
     @Schema(description = "Status da execução (success ou error)", example = "success")

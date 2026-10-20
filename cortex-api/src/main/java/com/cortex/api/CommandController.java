@@ -12,18 +12,30 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import org.springframework.beans.factory.annotation.Autowired;
 
+/**
+ * Controlador REST para execução unificada de comandos do sistema Cortex.
+ * Roteia requisições para estratégias específicas (query, capture, write_page, consolidate, promote_rules, etc.).
+ */
 @RestController
 @RequestMapping("/api")
 @Tag(name = "Command API", description = "Executa comandos do Cortex (similar a CLI)")
 public class CommandController {
 
     private final Map<String, CommandStrategy> strategies;
-    private final CortexConfigManager configManager = new CortexConfigManager();
+    private final CortexConfigManager configManager;
 
     public CommandController(List<CommandStrategy> strategyList) {
+        this(strategyList, new CortexConfigManager());
+    }
+
+    @Autowired
+    public CommandController(List<CommandStrategy> strategyList,
+                             @Autowired(required = false) CortexConfigManager configManager) {
         this.strategies = strategyList.stream()
                 .collect(Collectors.toMap(s -> s.getCommandName().toLowerCase(), s -> s));
+        this.configManager = configManager != null ? configManager : new CortexConfigManager();
     }
 
     @PostMapping("/execute")

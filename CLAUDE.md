@@ -72,3 +72,13 @@ Siga obrigatoriamente as diretrizes da **LLM Wiki** (Karpathy) e **ai-memory** (
 1. **Unidade Atômica**: O arquivo Markdown (`.md`) com frontmatter YAML é a unidade fundamental de conhecimento.
 2. **Consolidação em vez de RAG Vetorial Opaco**: Não dependa de chunking de texto ou vetores opacos. Processe logs/rascunhos e reescreva páginas de wiki claras e legíveis por humanos.
 3. **Persistência em Git**: Toda a memória do Cortex reside em `.agents/` no projeto do usuário, legível e versionada no repositório.
+
+## Fluxo de desenvolvimento — SDD
+
+Este projeto segue **Spec Driven Development**: toda mudança de comportamento nasce de uma spec
+em `specs/NNN-nome.md`, **antes** do código. As regras, a convenção de nomes e o **índice de
+specs** (que é o changelog do projeto) estão em `specs/README.md` — leia-o antes de implementar.
+
+- **Sem spec, sem código.** Se o pedido muda o que o sistema faz, o primeiro entregável é a spec.
+- Critérios de aceite (`CA-n`) são afirmações **verificáveis**; testes citam o número no nome.
+- Spec e implementação são revisadas no **mesmo PR**.

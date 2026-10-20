@@ -17,3 +17,16 @@ scratch_mcp_node/
 /find_*.py
 /test_mcp*.py
 /test_query_*.py
+
+# Credentials, Keys & Secrets
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+id_ecdsa*
+id_dsa*
+.ssh/
+.env
+*.env.local

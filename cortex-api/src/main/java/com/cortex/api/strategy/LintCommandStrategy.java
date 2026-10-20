@@ -4,12 +4,25 @@ import com.cortex.api.model.CommandRequest;
 import com.cortex.core.ProjectRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
+
 import java.util.List;
 
+/**
+ * Estratégia REST para auditoria e linting da integridade da Wiki.
+ */
 @Component
 public class LintCommandStrategy implements CommandStrategy {
+
+    private final ProjectRepository repo;
+
+    public LintCommandStrategy() {
+        this(null);
+    }
+
     @Autowired
-    private ProjectRepository repo;
+    public LintCommandStrategy(ProjectRepository repo) {
+        this.repo = repo;
+    }
 
     @Override
     public String getCommandName() { return "lint"; }

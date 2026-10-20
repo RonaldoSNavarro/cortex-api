@@ -1,22 +1,22 @@
 package com.cortex.cli;
 
 import com.cortex.core.ProjectRepository;
-import org.springframework.stereotype.Component;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
-import java.time.Instant;
-import java.util.UUID;
+
 import java.util.concurrent.Callable;
 
+/**
+ * Comando CLI para capturar notas e informações brutas (raw).
+ */
 @Component
-@Command(name = "ingest", description = "Captura informacoes brutas (raw).")
+@Command(name = "ingest", aliases = {"capture"}, description = "Captura informacoes brutas (raw).")
 public class IngestCommand implements Callable<Integer> {
 
-    @Autowired
-    private ProjectRepository repo;
-
+    private final ProjectRepository repo;
 
     @Option(names = {"--project"}, required = true, description = "Project ID")
     private String projectId;
@@ -27,9 +27,17 @@ public class IngestCommand implements Callable<Integer> {
     @Parameters(index = "0", description = "Conteúdo para ingestão")
     private String content;
 
+    public IngestCommand() {
+        this(null);
+    }
+
+    @Autowired
+    public IngestCommand(ProjectRepository repo) {
+        this.repo = repo;
+    }
+
     @Override
     public Integer call() throws Exception {
-        
         try {
             String id = repo.createRaw(projectId, type, content);
             System.out.println("Ingestão salva com ID " + id);

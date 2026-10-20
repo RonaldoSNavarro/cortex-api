@@ -6,6 +6,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
+/**
+ * Representa a unidade atômica fundamental de memória do Cortex.
+ * Modela uma página Markdown com metadados YAML (id, tipo, status, tags, etc.) e conteúdo.
+ */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class MemoryPage {
     private String id;

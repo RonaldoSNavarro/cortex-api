@@ -3,6 +3,10 @@ package com.cortex.core;
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * Representa um resultado ranqueado da busca léxica BM25 no Cortex.
+ * Contém a página correspondente, sua pontuação calculada, snippet contextual e termos casados.
+ */
 public class SearchResult {
     private final MemoryPage page;
     private final double score;

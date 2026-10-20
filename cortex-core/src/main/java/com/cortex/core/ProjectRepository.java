@@ -5,48 +5,300 @@ import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.*;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.BiConsumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import jakarta.annotation.PreDestroy;
+
+/**
+ * Repositório central de memória do Cortex para armazenamento, indexação, consulta e ciclo de vida de projetos.
+ * Gerencia persistência Markdown, sincronização assíncrona Git em Virtual Threads e integridade referencial.
+ */
 @Service
 public class ProjectRepository {
 
     private static final Logger log = LoggerFactory.getLogger(ProjectRepository.class);
+    private static final Pattern WINDOWS_DRIVE_PATTERN = Pattern.compile("^[a-zA-Z]:([/\\\\].*)?$");
+    private static final Pattern WSL_MOUNT_PATTERN = Pattern.compile("^/mnt/([a-zA-Z])(/.*)?$");
+    private static final Pattern SAFE_ID_PATTERN = Pattern.compile("^[a-zA-Z0-9._-]+$");
+
     private final ObjectMapper yamlMapper = new ObjectMapper(new YAMLFactory());
 
-    @Autowired(required = false)
-    private ProjectWatcherService watcherService;
+    private final ProjectWatcherService watcherService;
+    private final SmartSynthesizerService synthesizerService;
+    private final CortexConfigManager configManager;
+    private Path baseProjectsDir;
 
-    @Autowired(required = false)
-    private SmartSynthesizerService synthesizerService;
+    @Value("${cortex.git.sync-enabled:true}")
+    private boolean gitSyncEnabled = true;
+
+    @Value("${cortex.git.command-timeout-seconds:15}")
+    private long gitCommandTimeoutSeconds = 15;
+
+    @Value("${cortex.git.stale-lock-timeout-seconds:60}")
+    private long staleLockTimeoutSeconds = 60;
+
+    private Path containerProjectsRoot = Paths.get("/projetos");
 
     // Per-project in-memory indexes and knowledge graphs
     private final Map<String, InMemoryLexicalIndex> indexes = new ConcurrentHashMap<>();
     private final Map<String, KnowledgeGraph> graphs = new ConcurrentHashMap<>();
 
+    // Per-project serialized background Git sync queues on Java 25 Virtual Threads
+    private final ExecutorService gitSyncExecutor = Executors.newVirtualThreadPerTaskExecutor();
+    private final ConcurrentHashMap<String, CompletableFuture<Void>> projectGitQueues = new ConcurrentHashMap<>();
+    private final ReentrantLock gitRepoLock = new ReentrantLock();
+    private BiConsumer<String, String> gitSyncHandler = (projectId, commitMsg) -> syncToGit(commitMsg);
+
     public ProjectRepository() {
+        this(null, null, new CortexConfigManager());
+    }
+
+    public ProjectRepository(Path cortexHome) {
+        this(null, null, new CortexConfigManager());
+        if (cortexHome != null) {
+            this.baseProjectsDir = cortexHome.resolve("projects");
+        }
     }
 
     public ProjectRepository(ProjectWatcherService watcherService, SmartSynthesizerService synthesizerService) {
-        this.watcherService = watcherService;
-        this.synthesizerService = synthesizerService;
+        this(watcherService, synthesizerService, new CortexConfigManager());
     }
 
-    private Path getProjectDir(String projectId) {
-        if (projectId == null || projectId.trim().isEmpty()) {
-            throw new IllegalArgumentException("projectId cannot be null or empty");
+    @Autowired
+    public ProjectRepository(@Autowired(required = false) ProjectWatcherService watcherService,
+                             @Autowired(required = false) SmartSynthesizerService synthesizerService,
+                             @Autowired(required = false) CortexConfigManager configManager) {
+        this.watcherService = watcherService;
+        this.synthesizerService = synthesizerService;
+        this.configManager = configManager != null ? configManager : new CortexConfigManager();
+        this.baseProjectsDir = Paths.get(System.getProperty("user.home"), ".cortex", "projects");
+    }
+
+    public static void validateIdentifier(String id, String fieldName) {
+        if (id == null || id.isBlank()) {
+            throw new IllegalArgumentException(fieldName + " cannot be null or empty");
         }
-        return Paths.get(System.getProperty("user.home"), ".cortex", "projects", projectId);
+        String trimmed = id.trim();
+        if (".".equals(trimmed) || "..".equals(trimmed) || !SAFE_ID_PATTERN.matcher(trimmed).matches()) {
+            throw new IllegalArgumentException(fieldName + " contém caracteres inválidos ou caminho inseguro: " + id);
+        }
+    }
+
+    private Path getBaseProjectsDir() {
+        if (baseProjectsDir == null) {
+            baseProjectsDir = Paths.get(System.getProperty("user.home"), ".cortex", "projects");
+        }
+        return baseProjectsDir;
+    }
+
+    public boolean isGitSyncEnabled() {
+        String sysProp = System.getProperty("cortex.git.sync-enabled");
+        if (sysProp != null && !sysProp.isBlank()) {
+            return Boolean.parseBoolean(sysProp);
+        }
+        return gitSyncEnabled;
+    }
+
+    public void setGitSyncEnabled(boolean gitSyncEnabled) {
+        this.gitSyncEnabled = gitSyncEnabled;
+    }
+
+    public long getGitCommandTimeoutSeconds() {
+        String sysProp = System.getProperty("cortex.git.command-timeout-seconds");
+        if (sysProp != null && !sysProp.isBlank()) {
+            try {
+                return Long.parseLong(sysProp.trim());
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return gitCommandTimeoutSeconds;
+    }
+
+    public void setGitCommandTimeoutSeconds(long gitCommandTimeoutSeconds) {
+        this.gitCommandTimeoutSeconds = gitCommandTimeoutSeconds;
+    }
+
+    /**
+     * Retorna o tempo limite em segundos para considerar um arquivo de lock do Git (.git/index.lock) obsoleto.
+     * Avalia prioritariamente a system property {@code cortex.git.stale-lock-timeout-seconds}.
+     *
+     * @return tempo em segundos (padrão 60s)
+     */
+    public long getStaleLockTimeoutSeconds() {
+        String sysProp = System.getProperty("cortex.git.stale-lock-timeout-seconds");
+        if (sysProp != null && !sysProp.isBlank()) {
+            try {
+                return Long.parseLong(sysProp.trim());
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return staleLockTimeoutSeconds;
+    }
+
+    /**
+     * Configura o tempo limite em segundos para expiração de stale locks do Git.
+     *
+     * @param staleLockTimeoutSeconds tempo em segundos
+     */
+    public void setStaleLockTimeoutSeconds(long staleLockTimeoutSeconds) {
+        this.staleLockTimeoutSeconds = staleLockTimeoutSeconds;
+    }
+
+    /**
+     * Retorna o diretório raiz do Cortex local onde reside o repositório Git central (.cortex).
+     *
+     * @return diretório base do Cortex
+     */
+    public File getCortexDir() {
+        if (baseProjectsDir != null && baseProjectsDir.getParent() != null) {
+            return baseProjectsDir.getParent().toFile();
+        }
+        return Paths.get(System.getProperty("user.home"), ".cortex").toFile();
+    }
+
+    public void setGitSyncHandler(BiConsumer<String, String> gitSyncHandler) {
+        this.gitSyncHandler = Objects.requireNonNull(gitSyncHandler);
+    }
+
+    public CompletableFuture<Void> getPendingGitSyncFuture(String projectId) {
+        return projectGitQueues.getOrDefault(projectId, CompletableFuture.completedFuture(null));
+    }
+
+    public Path getContainerProjectsRoot() {
+        return containerProjectsRoot;
+    }
+
+    public void setContainerProjectsRoot(Path containerProjectsRoot) {
+        this.containerProjectsRoot = Objects.requireNonNull(containerProjectsRoot);
+    }
+
+    /**
+     * Resolves host paths from Windows (G:\Dev\Projetos\...) or WSL (/mnt/g/Dev/Projetos/...)
+     * to the container volume mount (/projetos/...) when present, or validates local paths.
+     * Rejects unmapped drives (such as F:\ or /mnt/f/) with IllegalArgumentException.
+     */
+    public Path resolveProjectPath(String rawPath) {
+        if (rawPath == null || rawPath.isBlank()) {
+            throw new IllegalArgumentException("Caminho não pode ser nulo ou vazio.");
+        }
+        String trimmed = rawPath.trim();
+        String normalized = trimmed.replace('\\', '/');
+        String lower = normalized.toLowerCase(Locale.ROOT);
+
+        boolean isMappedWindowsG = lower.equals("g:/dev/projetos") || lower.startsWith("g:/dev/projetos/");
+        boolean isMappedWslG = lower.equals("/mnt/g/dev/projetos") || lower.startsWith("/mnt/g/dev/projetos/");
+
+        if (isMappedWindowsG || isMappedWslG) {
+            String suffix = isMappedWindowsG
+                    ? normalized.substring("g:/dev/projetos".length())
+                    : normalized.substring("/mnt/g/dev/projetos".length());
+            while (suffix.startsWith("/")) {
+                suffix = suffix.substring(1);
+            }
+
+            if (containerProjectsRoot != null && Files.isDirectory(containerProjectsRoot)) {
+                return resolveSegments(containerProjectsRoot, suffix);
+            }
+
+            // Outside container: if exact path exists locally, use it directly
+            try {
+                if ( !(File.separatorChar == '/' && trimmed.contains("\\")) ) {
+                    Path direct = Paths.get(trimmed);
+                    if (Files.exists(direct)) {
+                        return direct;
+                    }
+                }
+            } catch (InvalidPathException ignored) {
+            }
+
+            if (File.separatorChar == '/') {
+                Path wslBase = Paths.get("/mnt/g/Dev/Projetos");
+                if (Files.isDirectory(wslBase)) {
+                    return resolveSegments(wslBase, suffix);
+                }
+                if (trimmed.contains("\\") || WINDOWS_DRIVE_PATTERN.matcher(trimmed).matches()) {
+                    throw new IllegalArgumentException("Caminho Windows sem volume /projetos montado: " + rawPath);
+                }
+            } else {
+                Path winBase = Paths.get("G:\\Dev\\Projetos");
+                if (Files.isDirectory(winBase)) {
+                    return resolveSegments(winBase, suffix);
+                }
+            }
+            return Paths.get(trimmed);
+        }
+
+        // Reject unmapped /mnt/<drive> paths (e.g. /mnt/f/Dev/Projetos/...)
+        Matcher wslMatcher = WSL_MOUNT_PATTERN.matcher(normalized);
+        if (wslMatcher.matches()) {
+            String driveLetter = wslMatcher.group(1).toLowerCase(Locale.ROOT);
+            if (!"g".equals(driveLetter)) {
+                throw new IllegalArgumentException("Drive WSL não mapeado (apenas G:\\Dev\\Projetos é suportado): " + rawPath);
+            }
+        }
+
+        // Check Windows drive paths (e.g. F:\Dev\Projetos\...)
+        if (WINDOWS_DRIVE_PATTERN.matcher(trimmed).matches()) {
+            char driveLetter = Character.toLowerCase(trimmed.charAt(0));
+            if (driveLetter == 'f') {
+                throw new IllegalArgumentException("Drive F:\\ não é suportado (utilize G:\\Dev\\Projetos): " + rawPath);
+            }
+            if (File.separatorChar == '/') {
+                throw new IllegalArgumentException("Caminho Windows inválido em ambiente Linux: " + rawPath);
+            }
+            Path driveRoot = Paths.get(trimmed.substring(0, 2) + "\\");
+            if (!Files.exists(driveRoot)) {
+                throw new IllegalArgumentException("Drive inexistente no sistema local: " + rawPath);
+            }
+            return Paths.get(trimmed);
+        }
+
+        // Reject paths containing backslashes on Linux to avoid creating directories with '\' in their name
+        if (File.separatorChar == '/' && trimmed.contains("\\")) {
+            throw new IllegalArgumentException("Caminho contém barras invertidas inválidas em ambiente Linux: " + rawPath);
+        }
+
+        return Paths.get(trimmed);
+    }
+
+    private static Path resolveSegments(Path base, String relativeSuffix) {
+        Path current = base;
+        if (relativeSuffix == null || relativeSuffix.isEmpty()) {
+            return current;
+        }
+        for (String part : relativeSuffix.split("/")) {
+            if (!part.isEmpty()) {
+                current = current.resolve(part);
+            }
+        }
+        return current;
+    }
+
+    public Path getProjectDir(String projectId) {
+        validateIdentifier(projectId, "projectId");
+        Path resolved = getBaseProjectsDir().resolve(projectId).normalize();
+        if (!resolved.startsWith(getBaseProjectsDir().normalize())) {
+            throw new IllegalArgumentException("Path traversal detectado para projectId: " + projectId);
+        }
+        return resolved;
     }
 
     public InMemoryLexicalIndex getIndex(String projectId) {
@@ -130,8 +382,13 @@ public class ProjectRepository {
     }
 
     public void saveRaw(String projectId, String fileName, String content) throws IOException {
+        validateIdentifier(projectId, "projectId");
         Path projectDir = getProjectDir(projectId);
-        Path rawPath = projectDir.resolve("raw").resolve(fileName);
+        Path rawDir = projectDir.resolve("raw").normalize();
+        Path rawPath = rawDir.resolve(fileName).normalize();
+        if (!rawPath.startsWith(rawDir)) {
+            throw new IllegalArgumentException("Path traversal detectado em fileName: " + fileName);
+        }
         Files.writeString(rawPath, content);
         try {
             MemoryPage page = MarkdownParser.parse(rawPath);
@@ -144,6 +401,7 @@ public class ProjectRepository {
     }
 
     public String createRaw(String projectId, String typeStr, String content) throws IOException {
+        validateIdentifier(projectId, "projectId");
         Path projectDir = getProjectDir(projectId);
         MemoryType type = MemoryType.fromValue(typeStr);
         if (type == null) {
@@ -164,7 +422,7 @@ public class ProjectRepository {
         yamlString = yamlString + "---\n\n" + content;
 
         saveRaw(projectId, id + ".md", yamlString);
-        appendLog(projectDir, "ingest | Raw memory criada: " + id);
+        appendLog(projectDir, "ingest", id);
         return id;
     }
 
@@ -200,6 +458,8 @@ public class ProjectRepository {
     }
 
     public void updatePageStatus(String projectId, String pageId, String newStatus) throws IOException {
+        validateIdentifier(projectId, "projectId");
+        validateIdentifier(pageId, "pageId");
         Path projectDir = getProjectDir(projectId);
         List<Path> dirsToSearch = List.of(
                 projectDir.resolve("pages"),
@@ -207,7 +467,10 @@ public class ProjectRepository {
         );
         for (Path dir : dirsToSearch) {
             if (Files.exists(dir)) {
-                Path file = dir.resolve(pageId + ".md");
+                Path file = dir.resolve(pageId + ".md").normalize();
+                if (!file.startsWith(dir.normalize())) {
+                    throw new IllegalArgumentException("Path traversal detectado em pageId: " + pageId);
+                }
                 if (Files.exists(file)) {
                     MemoryPage page;
                     try {
@@ -245,6 +508,7 @@ public class ProjectRepository {
     }
 
     public String writePage(String projectId, String typeStr, List<String> tags, String supersedes, List<String> consumedRawIds, String content) throws IOException {
+        validateIdentifier(projectId, "projectId");
         Path projectDir = getProjectDir(projectId);
         MemoryType type = MemoryType.fromValue(typeStr);
         if (type == null) {
@@ -253,14 +517,33 @@ public class ProjectRepository {
 
         Set<String> impactedPages = Collections.emptySet();
         if (supersedes != null && !supersedes.trim().isEmpty()) {
+            validateIdentifier(supersedes.trim(), "supersedes");
+            Path pagesDir = projectDir.resolve("pages").normalize();
+            Path rawDir = projectDir.resolve("raw").normalize();
+            Path supFileInPages = pagesDir.resolve(supersedes.trim() + ".md").normalize();
+            Path supFileInRaw = rawDir.resolve(supersedes.trim() + ".md").normalize();
+            if (!supFileInPages.startsWith(pagesDir) && !supFileInRaw.startsWith(rawDir)) {
+                throw new IllegalArgumentException("Path traversal detectado em supersedes: " + supersedes);
+            }
             impactedPages = getGraph(projectId).getImpactedPagesOnSupersede(supersedes.trim());
             updatePageStatus(projectId, supersedes.trim(), "superseded");
+        }
+
+        if (consumedRawIds != null && !consumedRawIds.isEmpty()) {
+            Path rawDir = projectDir.resolve("raw").normalize();
+            for (String rawId : consumedRawIds) {
+                validateIdentifier(rawId, "consumedRawId");
+                Path rawFile = rawDir.resolve(rawId + ".md").normalize();
+                if (!rawFile.startsWith(rawDir)) {
+                    throw new IllegalArgumentException("Path traversal detectado em consumedRawIds: " + rawId);
+                }
+            }
         }
 
         String dateStr = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
         String id = dateStr + "-" + UUID.randomUUID().toString().substring(0, 4);
         if (tags != null && !tags.isEmpty()) {
-            String mainTag = tags.get(0).toLowerCase().replaceAll("[^a-z0-9]", "-");
+            String mainTag = tags.getFirst().toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "-");
             id = dateStr + "-" + mainTag + "-" + UUID.randomUUID().toString().substring(0, 4);
         }
 
@@ -277,6 +560,7 @@ public class ProjectRepository {
         if (!yamlString.startsWith("---")) yamlString = "---\n" + yamlString;
         yamlString = yamlString + "---\n\n" + content;
 
+        Files.createDirectories(projectDir.resolve("pages"));
         Path pagesPath = projectDir.resolve("pages").resolve(id + ".md");
         Files.writeString(pagesPath, yamlString);
 
@@ -285,7 +569,7 @@ public class ProjectRepository {
             for (String rawId : consumedRawIds) {
                 Path rawFile = rawDir.resolve(rawId + ".md");
                 if (Files.exists(rawFile)) {
-                    Files.delete(rawFile);
+                    Files.deleteIfExists(rawFile);
                     getIndex(projectId).removePage(rawId);
                     getGraph(projectId).removePage(rawId);
                 }
@@ -293,9 +577,9 @@ public class ProjectRepository {
         }
 
         updateIndex(projectDir, id, typeStr, tags);
-        appendLog(projectDir, "write | Página consolidada: " + id + " (substitui: " + supersedes + ")");
+        appendLog(projectDir, "write", id);
 
-        // Index new page
+        // Index new page synchronously before returning
         try {
             MemoryPage newPage = MarkdownParser.parse(pagesPath);
             getIndex(projectId).indexPage(newPage);
@@ -303,7 +587,7 @@ public class ProjectRepository {
         } catch (Exception ignored) {
         }
 
-        syncToGit("Auto-consolidado pelo Cortex: " + id);
+        scheduleGitSync(projectId, "Auto-consolidado pelo Cortex: " + id);
 
         StringBuilder res = new StringBuilder();
         res.append("Página salva com sucesso. ID: ").append(id);
@@ -315,23 +599,55 @@ public class ProjectRepository {
         return res.toString();
     }
 
-    private void appendLog(Path projectDir, String message) throws IOException {
+    private synchronized void appendLog(Path projectDir, String event, String id) throws IOException {
         Path logPath = projectDir.resolve("log.md");
         String timestamp = Instant.now().toString();
-        String logEntry = "## [" + timestamp + "] " + message + "\n";
-        Files.writeString(logPath, logEntry, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        if (!Files.exists(logPath)) {
+            String logContent = "# Log Cronológico\n\n" +
+                    "| Data | Evento | ID |\n" +
+                    "|---|---|---|\n";
+            Files.writeString(logPath, logContent, StandardOpenOption.CREATE);
+        }
+        String cleanEvent = event.replace("|", "/").trim();
+        String cleanId = (id != null && !id.isBlank()) ? id.replace("|", "/").trim() : "-";
+        String logEntry = "| " + timestamp + " | " + cleanEvent + " | " + cleanId + " |\n";
+        Files.writeString(logPath, logEntry, StandardOpenOption.APPEND);
     }
 
-    private void updateIndex(Path projectDir, String id, String typeStr, List<String> tags) throws IOException {
+    private synchronized void appendLog(Path projectDir, String message) throws IOException {
+        if (message != null && message.contains(" | ")) {
+            String[] parts = message.split(" \\| ", 2);
+            appendLog(projectDir, parts[0].trim(), parts[1].trim());
+        } else {
+            appendLog(projectDir, message != null ? message.trim() : "", "-");
+        }
+    }
+
+    private synchronized void updateIndex(Path projectDir, String id, String typeStr, List<String> tags) throws IOException {
         Path indexPath = projectDir.resolve("index.md");
-        String tagStr = tags != null ? String.join(", ", tags) : "sem tags";
-        String entry = "- [" + id + "](" + "pages/" + id + ".md" + ") | Tipo: " + typeStr + " | Tags: " + tagStr + "\n";
+        String tagStr = (tags != null && !tags.isEmpty()) ? String.join(", ", tags) : "sem tags";
+        String entry = "- [" + id + "](pages/" + id + ".md) | Tipo: " + typeStr + " | Tags: " + tagStr;
 
         if (!Files.exists(indexPath)) {
-            String header = "# Índice do Projeto\n\nCatálogo de todas as páginas consolidadas.\n\n";
-            Files.writeString(indexPath, header, StandardOpenOption.CREATE);
+            String header = "---\n" +
+                    "title: Índice do Projeto\n" +
+                    "---\n\n" +
+                    "# Índice de Páginas\n\n";
+            Files.writeString(indexPath, header + entry + "\n", StandardOpenOption.CREATE);
+            return;
         }
-        Files.writeString(indexPath, entry, StandardOpenOption.APPEND);
+
+        String content = Files.readString(indexPath);
+        content = content.replace("_Nenhuma página consolidada ainda._\n", "");
+        content = content.replace("_Nenhuma página consolidada ainda._", "");
+
+        if (!content.contains("[" + id + "](")) {
+            if (!content.endsWith("\n")) {
+                content += "\n";
+            }
+            content += entry + "\n";
+        }
+        Files.writeString(indexPath, content);
     }
 
     public List<MemoryPage> findAll(String projectId) throws IOException {
@@ -407,7 +723,7 @@ public class ProjectRepository {
             }
         }
 
-        Pattern wikilinkPattern = Pattern.compile("\\[\\[([a-zA-Z0-9_\\-]+)\\]\\]");
+        Pattern wikilinkPattern = Pattern.compile("\\[\\[([a-zA-Z0-9_\\-\\s]+)\\]\\]");
 
         for (MemoryPage page : allPages) {
             if (page.getId() == null) continue;
@@ -431,7 +747,7 @@ public class ProjectRepository {
             if (page.getContent() != null) {
                 Matcher m = wikilinkPattern.matcher(page.getContent());
                 while (m.find()) {
-                    String targetId = m.group(1);
+                    String targetId = m.group(1).trim();
                     if (!validIds.contains(targetId)) {
                         warnings.add("[DANGLING WIKILINK] A página " + page.getId() + " cita o ID inexistente: [[" + targetId + "]]");
                     }
@@ -455,6 +771,8 @@ public class ProjectRepository {
     }
 
     public void promoteRules(String projectId, String targetPath) throws IOException {
+        Path target = resolveTargetFileForProject(projectId, targetPath);
+
         List<MemoryPage> allPages = findAll(projectId);
         List<MemoryPage> activeRules = new ArrayList<>();
 
@@ -478,11 +796,10 @@ public class ProjectRepository {
         }
         rulesBlock.append("<!-- END CORTEX RULES -->\n");
 
-        Path target = Paths.get(targetPath);
         if (Files.exists(target)) {
             String existingContent = Files.readString(target);
             if (existingContent.contains("<!-- BEGIN CORTEX RULES -->") && existingContent.contains("<!-- END CORTEX RULES -->")) {
-                existingContent = existingContent.replaceAll("(?s)<!-- BEGIN CORTEX RULES -->.*?<!-- END CORTEX RULES -->\n?", rulesBlock.toString());
+                existingContent = existingContent.replaceAll("(?s)<!-- BEGIN CORTEX RULES -->.*?<!-- END CORTEX RULES -->\n?", Matcher.quoteReplacement(rulesBlock.toString()));
                 Files.writeString(target, existingContent);
             } else {
                 Files.writeString(target, existingContent + rulesBlock.toString());
@@ -495,7 +812,62 @@ public class ProjectRepository {
         }
     }
 
+    private Path resolveTargetFileForProject(String projectId, String targetPath) throws IOException {
+        if (targetPath == null || targetPath.isBlank()) {
+            throw new IllegalArgumentException("targetPath não pode ser nulo ou vazio.");
+        }
+        String trimmed = targetPath.trim();
+        boolean isAbsoluteOrDrive = trimmed.startsWith("/") || WINDOWS_DRIVE_PATTERN.matcher(trimmed).matches();
+        if (isAbsoluteOrDrive) {
+            return resolveProjectPath(trimmed);
+        }
+        if (File.separatorChar == '/' && trimmed.contains("\\")) {
+            throw new IllegalArgumentException("Caminho contém barras invertidas inválidas em ambiente Linux: " + targetPath);
+        }
+
+        // Relative path (e.g. .agents/AGENTS.md): check if project has a registered root_path in CortexConfig
+        try {
+            CortexConfig config = configManager.loadConfig();
+            String registeredRoot = null;
+            for (Map.Entry<String, String> entry : config.getProjects().entrySet()) {
+                if (projectId != null && projectId.equals(entry.getValue())) {
+                    registeredRoot = entry.getKey();
+                }
+            }
+            if (registeredRoot != null && !registeredRoot.isBlank()) {
+                Path projectRoot = resolveProjectPath(registeredRoot);
+                return resolveSegments(projectRoot, trimmed.replace('\\', '/'));
+            }
+        } catch (IllegalArgumentException e) {
+            throw e;
+        } catch (Exception ignored) {
+        }
+
+        return Paths.get(trimmed);
+    }
+
     public String bootstrap(String projectId, String rootPath) throws IOException {
+        Path resolvedRoot = null;
+        if (rootPath != null && !rootPath.trim().isEmpty()) {
+            resolvedRoot = resolveProjectPath(rootPath);
+        }
+
+        if (projectId == null || projectId.trim().isEmpty()) {
+            if (resolvedRoot != null && resolvedRoot.getFileName() != null) {
+                projectId = resolvedRoot.getFileName().toString();
+            } else if (rootPath != null && !rootPath.trim().isEmpty()) {
+                String clean = rootPath.trim().replace('\\', '/');
+                while (clean.endsWith("/")) {
+                    clean = clean.substring(0, clean.length() - 1);
+                }
+                int idx = clean.lastIndexOf('/');
+                projectId = idx >= 0 ? clean.substring(idx + 1) : clean;
+            } else {
+                throw new IllegalArgumentException("projectId cannot be null or empty");
+            }
+        }
+        validateIdentifier(projectId, "projectId");
+
         Path projectDir = getProjectDir(projectId);
         init(projectId);
 
@@ -518,15 +890,10 @@ public class ProjectRepository {
             Files.writeString(logPath, logContent);
         }
 
-        if (rootPath != null && !rootPath.trim().isEmpty()) {
-            CortexConfigManager configManager = new CortexConfigManager();
-            CortexConfig config = configManager.loadConfig();
-            config.getProjects().put(rootPath, projectId);
-            configManager.saveConfig(config);
-        }
+        if (resolvedRoot != null) {
+            configManager.registerProject(resolvedRoot.toString(), projectId);
 
-        if (rootPath != null && !rootPath.trim().isEmpty()) {
-            Path skillDir = Paths.get(rootPath, ".agents", "skills", "cortex-conventions");
+            Path skillDir = resolvedRoot.resolve(".agents").resolve("skills").resolve("cortex-conventions");
             Path skillFile = skillDir.resolve("SKILL.md");
             if (!Files.exists(skillFile)) {
                 Files.createDirectories(skillDir);
@@ -691,43 +1058,226 @@ public class ProjectRepository {
         return sb.toString();
     }
 
-    private void syncToGit(String commitMsg) {
-        String authorName = System.getenv("GIT_AUTHOR_NAME");
-        String authorEmail = System.getenv("GIT_AUTHOR_EMAIL");
-        String remoteUrl = System.getenv("GIT_REMOTE_URL");
+    private CompletableFuture<Void> scheduleGitSync(String projectId, String commitMsg) {
+        if (!isGitSyncEnabled()) {
+            return CompletableFuture.completedFuture(null);
+        }
+        return projectGitQueues.compute(projectId, (proj, prev) -> {
+            CompletableFuture<Void> base = (prev == null)
+                    ? CompletableFuture.completedFuture(null)
+                    : prev.exceptionally(ex -> null);
+            return base.thenRunAsync(() -> {
+                gitRepoLock.lock();
+                try {
+                    gitSyncHandler.accept(proj, commitMsg);
+                } catch (Throwable t) {
+                    log.error("Failed background Git sync for project [{}]: {}", proj, t.getMessage());
+                } finally {
+                    gitRepoLock.unlock();
+                }
+            }, gitSyncExecutor);
+        });
+    }
+
+    private static String getGitConfigValue(String envKey, String sysPropKey) {
+        String prop = System.getProperty(sysPropKey);
+        if (prop != null && !prop.isBlank()) {
+            return prop;
+        }
+        return System.getenv(envKey);
+    }
+
+    /**
+     * Inspeciona preventivamente e remove o arquivo {@code .git/index.lock} caso sua idade
+     * seja superior ao limiar configurado (stale lock). Preserva locks ativos recentes.
+     *
+     * @param gitRepoDir repositório Git local a verificar
+     * @param thresholdSeconds limiar em segundos para considerar o lock como órfão
+     * @return {@code true} se um lock órfão foi detectado e removido com sucesso; {@code false} caso contrário
+     */
+    public boolean cleanStaleGitIndexLock(File gitRepoDir, long thresholdSeconds) {
+        if (gitRepoDir == null || !gitRepoDir.exists()) {
+            return false;
+        }
+        Path lockPath = gitRepoDir.toPath().resolve(".git").resolve("index.lock");
+        if (!Files.exists(lockPath)) {
+            return false;
+        }
+        try {
+            BasicFileAttributes attrs = Files.readAttributes(lockPath, BasicFileAttributes.class);
+            Instant lastModified = attrs.lastModifiedTime().toInstant();
+            Duration age = Duration.between(lastModified, Instant.now());
+            if (age.getSeconds() >= thresholdSeconds) {
+                try {
+                    Files.deleteIfExists(lockPath);
+                    log.warn("Stale Git lock file detected (age: {}s >= threshold: {}s). Successfully removed: {}",
+                            age.getSeconds(), thresholdSeconds, lockPath);
+                    return true;
+                } catch (IOException e) {
+                    log.error("Failed to delete stale Git lock file {}: {}", lockPath, e.getMessage());
+                    return false;
+                }
+            } else {
+                log.debug("Active Git lock file detected (age: {}s < threshold: {}s). Preserving: {}",
+                        age.getSeconds(), thresholdSeconds, lockPath);
+                return false;
+            }
+        } catch (NoSuchFileException e) {
+            return false;
+        } catch (IOException e) {
+            log.warn("Could not read attributes for Git lock file {}: {}", lockPath, e.getMessage());
+            return false;
+        }
+    }
+
+    private boolean isLockOlderThan(Path lockPath, long thresholdSeconds) {
+        try {
+            BasicFileAttributes attrs = Files.readAttributes(lockPath, BasicFileAttributes.class);
+            Instant lastModified = attrs.lastModifiedTime().toInstant();
+            Duration age = Duration.between(lastModified, Instant.now());
+            return age.getSeconds() >= thresholdSeconds;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * Executa comando Git com recuperação reativa transparente caso ocorra colisão de
+     * {@code index.lock: File exists} com idade superior ao timeout de comando configurado.
+     *
+     * @param directory diretório de trabalho onde o comando será executado
+     * @param command comando e argumentos a executar
+     * @return saída padrão e de erro do comando Git executado
+     * @throws IOException se o comando falhar sem recuperação ou por erro de I/O
+     * @throws InterruptedException se o processo for interrompido
+     */
+    public String runGitCommandWithLockRecovery(File directory, String... command) throws IOException, InterruptedException {
+        try {
+            return runCommandWithOutput(directory, command);
+        } catch (IOException e) {
+            if (e.getMessage() != null && e.getMessage().contains("index.lock") && e.getMessage().contains("File exists")) {
+                Path lockPath = directory.toPath().resolve(".git").resolve("index.lock");
+                if (Files.exists(lockPath) && isLockOlderThan(lockPath, getGitCommandTimeoutSeconds())) {
+                    log.warn("Reactive recovery: removing stale lock file after Git failure: {}", lockPath);
+                    try {
+                        Files.deleteIfExists(lockPath);
+                    } catch (IOException ex) {
+                        log.error("Failed to delete lock file during reactive recovery: {}", ex.getMessage());
+                        throw e;
+                    }
+                    return runCommandWithOutput(directory, command);
+                }
+            }
+            throw e;
+        }
+    }
+
+    public void syncToGit(String commitMsg) {
+        if (!isGitSyncEnabled()) {
+            return;
+        }
+        String authorName = getGitConfigValue("GIT_AUTHOR_NAME", "cortex.git.author-name");
+        String authorEmail = getGitConfigValue("GIT_AUTHOR_EMAIL", "cortex.git.author-email");
+        String remoteUrl = getGitConfigValue("GIT_REMOTE_URL", "cortex.git.remote-url");
         if (authorName == null || authorEmail == null || remoteUrl == null) {
             return;
         }
+        if (WINDOWS_DRIVE_PATTERN.matcher(remoteUrl).matches()) {
+            remoteUrl = Paths.get(remoteUrl).toUri().toString();
+        }
+        if (remoteUrl.startsWith("file:/") && !remoteUrl.startsWith("file:///")) {
+            remoteUrl = "file:///" + remoteUrl.substring(6);
+        }
 
         try {
-            File cortexDir = Paths.get(System.getProperty("user.home"), ".cortex").toFile();
+            File cortexDir = getCortexDir();
             if (!new File(cortexDir, ".git").exists()) {
                 runCommand(cortexDir, "git", "init");
                 runCommand(cortexDir, "git", "config", "user.name", authorName);
                 runCommand(cortexDir, "git", "config", "user.email", authorEmail);
-                runCommand(cortexDir, "git", "config", "core.sshCommand", "ssh -o StrictHostKeyChecking=no");
+                runCommand(cortexDir, "git", "config", "core.sshCommand", "ssh -o StrictHostKeyChecking=accept-new");
                 runCommand(cortexDir, "git", "remote", "add", "origin", remoteUrl);
             }
 
-            runCommand(cortexDir, "git", "add", ".");
-            runCommand(cortexDir, "git", "commit", "-m", commitMsg);
-            runCommand(cortexDir, "git", "branch", "-M", "main");
-            runCommand(cortexDir, "git", "push", "-u", "origin", "main");
+            Path lockPath = cortexDir.toPath().resolve(".git").resolve("index.lock");
+            if (Files.exists(lockPath)) {
+                boolean cleaned = cleanStaleGitIndexLock(cortexDir, getStaleLockTimeoutSeconds());
+                if (!cleaned && Files.exists(lockPath)) {
+                    log.warn("Git lock file .git/index.lock is currently active (recent). Skipping Git sync to avoid collision.");
+                    return;
+                }
+            }
+
+            runGitCommandWithLockRecovery(cortexDir, "git", "add", ".");
+            String status = runGitCommandWithLockRecovery(cortexDir, "git", "status", "--porcelain");
+            if (!status.trim().isEmpty()) {
+                runGitCommandWithLockRecovery(cortexDir, "git", "commit", "-m", commitMsg);
+            }
+            runGitCommandWithLockRecovery(cortexDir, "git", "branch", "-M", "main");
+            runGitCommandWithLockRecovery(cortexDir, "git", "push", "-u", "origin", "main");
             log.info("Successfully synced to Git.");
         } catch (Exception e) {
             log.error("Failed to sync to Git: {}", e.getMessage());
         }
     }
 
-    private void runCommand(File directory, String... command) throws IOException, InterruptedException {
+    public String runCommandWithOutput(File directory, String... command) throws IOException, InterruptedException {
         ProcessBuilder pb = new ProcessBuilder(command);
         pb.directory(directory);
+        pb.redirectErrorStream(true);
+        pb.environment().put("GIT_TERMINAL_PROMPT", "0");
+        pb.environment().put("GIT_ASKPASS", "");
+        pb.environment().put("SSH_ASKPASS", "");
         Process p = pb.start();
-        int exitCode = p.waitFor();
-        if (exitCode != 0) {
-            String errorMsg = new String(p.getErrorStream().readAllBytes());
-            log.error("Git command failed with exit code {}: {}", exitCode, errorMsg);
-            throw new IOException("Git command failed: " + errorMsg);
+
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        Thread readerThread = Thread.ofVirtual().start(() -> {
+            try {
+                p.getInputStream().transferTo(buffer);
+            } catch (IOException ignored) {
+            }
+        });
+
+        long timeout = getGitCommandTimeoutSeconds();
+        boolean completed = p.waitFor(timeout, TimeUnit.SECONDS);
+        if (!completed) {
+            try {
+                p.descendants().forEach(ProcessHandle::destroyForcibly);
+            } catch (Exception ignored) {
+            }
+            p.destroyForcibly();
+            readerThread.interrupt();
+            throw new IOException("Git command timed out after " + timeout + "s: " + String.join(" ", command));
         }
+        readerThread.join(2000);
+
+        int exitCode = p.exitValue();
+        String output = buffer.toString(StandardCharsets.UTF_8);
+        if (exitCode != 0) {
+            log.error("Git command failed with exit code {}: {}", exitCode, output);
+            throw new IOException("Git command failed with exit code " + exitCode + ": " + output);
+        }
+        return output;
+    }
+
+    public void runCommand(File directory, String... command) throws IOException, InterruptedException {
+        runCommandWithOutput(directory, command);
+    }
+
+    @PreDestroy
+    public void shutdown() {
+        gitSyncExecutor.shutdown();
+        try {
+            if (!gitSyncExecutor.awaitTermination(2, TimeUnit.SECONDS)) {
+                gitSyncExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            gitSyncExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    public ExecutorService getGitSyncExecutor() {
+        return gitSyncExecutor;
     }
 }

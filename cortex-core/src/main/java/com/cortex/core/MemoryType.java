@@ -3,6 +3,9 @@ package com.cortex.core;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonValue;
 
+/**
+ * Tipos canônicos de memória suportados pelo Cortex: FACT, DECISION, RULE, GOTCHA e NOTE.
+ */
 public enum MemoryType {
     FACT("fact"),
     DECISION("decision"),

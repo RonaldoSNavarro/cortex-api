@@ -3,6 +3,10 @@ package com.cortex.core;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
+/**
+ * Consolida métricas estatísticas e indicadores de saúde do cérebro de memória de um projeto.
+ * Inclui contagens por tipo, taxas de consolidação e topologia do grafo de conhecimento.
+ */
 public class CortexStats {
     private final String projectId;
     private final int totalMemories;

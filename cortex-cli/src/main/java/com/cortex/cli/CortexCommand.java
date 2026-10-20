@@ -1,16 +1,17 @@
 package com.cortex.cli;
 
-import com.cortex.core.ProjectRepository;
-
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.beans.factory.annotation.Autowired;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 
 import java.util.concurrent.Callable;
 
+/**
+ * Ponto de entrada CLI do sistema Cortex via Spring Boot e Picocli.
+ */
 @SpringBootApplication(scanBasePackages = "com.cortex")
 @Command(name = "cortex", mixinStandardHelpOptions = true, version = "1.0",
         description = "Cortex - Memory and Wiki System",
@@ -27,8 +28,16 @@ import java.util.concurrent.Callable;
         })
 public class CortexCommand implements Callable<Integer>, CommandLineRunner {
 
+    private final CommandLine.IFactory factory;
+
+    public CortexCommand() {
+        this(null);
+    }
+
     @Autowired
-    private CommandLine.IFactory factory;
+    public CortexCommand(@Autowired(required = false) CommandLine.IFactory factory) {
+        this.factory = factory;
+    }
 
     @Override
     public Integer call() {
@@ -38,7 +47,8 @@ public class CortexCommand implements Callable<Integer>, CommandLineRunner {
 
     @Override
     public void run(String... args) {
-        int exitCode = new CommandLine(this, factory).execute(args);
+        CommandLine cmdLine = factory != null ? new CommandLine(this, factory) : new CommandLine(this);
+        int exitCode = cmdLine.execute(args);
         if (exitCode != 0) {
             System.exit(exitCode);
         }

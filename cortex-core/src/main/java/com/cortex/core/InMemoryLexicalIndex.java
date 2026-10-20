@@ -4,13 +4,13 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 
 /**
- * In-memory inverted index providing lexical search with BM25 ranking,
- * faceted filtering (type:, tags:, status:), recency boost, and snippet extraction.
+ * Índice léxico invertido em memória com ranqueamento BM25 e filtros facetados (type:, tags:, status:).
+ * Garante consistência e isolamento atômico em operações concorrentes através de ReentrantReadWriteLock.
  */
 public class InMemoryLexicalIndex {
 
@@ -24,58 +24,73 @@ public class InMemoryLexicalIndex {
             "the", "an", "and", "or", "but", "in", "on", "at", "to", "for", "with", "by", "of"
     ));
 
+    private final ReentrantReadWriteLock rwLock = new ReentrantReadWriteLock();
     private final Map<String, MemoryPage> pagesById = new ConcurrentHashMap<>();
     private final Map<String, Set<String>> invertedIndex = new ConcurrentHashMap<>();
     private final Map<String, Map<String, Integer>> docTermFrequencies = new ConcurrentHashMap<>();
     private final Map<String, Integer> docLengths = new ConcurrentHashMap<>();
 
-    public synchronized void indexPage(MemoryPage page) {
+    public void indexPage(MemoryPage page) {
         if (page == null || page.getId() == null) return;
-        removePage(page.getId());
+        rwLock.writeLock().lock();
+        try {
+            removePageInternal(page.getId());
 
-        pagesById.put(page.getId(), page);
-        Map<String, Integer> termFreqs = new HashMap<>();
+            pagesById.put(page.getId(), page);
+            Map<String, Integer> termFreqs = new HashMap<>();
 
-        // 1. Index ID (High boost)
-        List<String> idTokens = tokenize(page.getId());
-        for (String t : idTokens) {
-            termFreqs.put(t, termFreqs.getOrDefault(t, 0) + 3);
-        }
+            // 1. Index ID (High boost)
+            List<String> idTokens = tokenize(page.getId());
+            for (String t : idTokens) {
+                termFreqs.put(t, termFreqs.getOrDefault(t, 0) + 3);
+            }
 
-        // 2. Index Tags (High boost)
-        if (page.getTags() != null) {
-            for (String tag : page.getTags()) {
-                for (String t : tokenize(tag)) {
-                    termFreqs.put(t, termFreqs.getOrDefault(t, 0) + 2);
+            // 2. Index Tags (High boost)
+            if (page.getTags() != null) {
+                for (String tag : page.getTags()) {
+                    for (String t : tokenize(tag)) {
+                        termFreqs.put(t, termFreqs.getOrDefault(t, 0) + 2);
+                    }
                 }
             }
-        }
 
-        // 3. Index Type & Status
-        if (page.getType() != null) {
-            termFreqs.put(page.getType().getValue().toLowerCase(), termFreqs.getOrDefault(page.getType().getValue().toLowerCase(), 0) + 1);
-        }
-        if (page.getStatus() != null) {
-            termFreqs.put(page.getStatus().toLowerCase(), termFreqs.getOrDefault(page.getStatus().toLowerCase(), 0) + 1);
-        }
+            // 3. Index Type & Status
+            if (page.getType() != null) {
+                termFreqs.put(page.getType().getValue().toLowerCase(), termFreqs.getOrDefault(page.getType().getValue().toLowerCase(), 0) + 1);
+            }
+            if (page.getStatus() != null) {
+                termFreqs.put(page.getStatus().toLowerCase(), termFreqs.getOrDefault(page.getStatus().toLowerCase(), 0) + 1);
+            }
 
-        // 4. Index Content
-        List<String> contentTokens = tokenize(page.getContent());
-        for (String t : contentTokens) {
-            termFreqs.put(t, termFreqs.getOrDefault(t, 0) + 1);
-        }
+            // 4. Index Content
+            List<String> contentTokens = tokenize(page.getContent());
+            for (String t : contentTokens) {
+                termFreqs.put(t, termFreqs.getOrDefault(t, 0) + 1);
+            }
 
-        int totalLength = contentTokens.size() + idTokens.size() * 3 + (page.getTags() != null ? page.getTags().size() * 2 : 0);
-        docLengths.put(page.getId(), Math.max(1, totalLength));
-        docTermFrequencies.put(page.getId(), termFreqs);
+            int totalLength = contentTokens.size() + idTokens.size() * 3 + (page.getTags() != null ? page.getTags().size() * 2 : 0);
+            docLengths.put(page.getId(), Math.max(1, totalLength));
+            docTermFrequencies.put(page.getId(), termFreqs);
 
-        for (String term : termFreqs.keySet()) {
-            invertedIndex.computeIfAbsent(term, k -> ConcurrentHashMap.newKeySet()).add(page.getId());
+            for (String term : termFreqs.keySet()) {
+                invertedIndex.computeIfAbsent(term, k -> ConcurrentHashMap.newKeySet()).add(page.getId());
+            }
+        } finally {
+            rwLock.writeLock().unlock();
         }
     }
 
-    public synchronized void removePage(String pageId) {
+    public void removePage(String pageId) {
         if (pageId == null) return;
+        rwLock.writeLock().lock();
+        try {
+            removePageInternal(pageId);
+        } finally {
+            rwLock.writeLock().unlock();
+        }
+    }
+
+    private void removePageInternal(String pageId) {
         pagesById.remove(pageId);
         docLengths.remove(pageId);
         Map<String, Integer> freqs = docTermFrequencies.remove(pageId);
@@ -92,96 +107,114 @@ public class InMemoryLexicalIndex {
         }
     }
 
-    public synchronized void clear() {
-        pagesById.clear();
-        invertedIndex.clear();
-        docTermFrequencies.clear();
-        docLengths.clear();
+    public void clear() {
+        rwLock.writeLock().lock();
+        try {
+            pagesById.clear();
+            invertedIndex.clear();
+            docTermFrequencies.clear();
+            docLengths.clear();
+        } finally {
+            rwLock.writeLock().unlock();
+        }
     }
 
-    public List<SearchResult> search(String rawQuery, int limit) {
+    public Map<String, MemoryPage> getAllPages() {
+        rwLock.readLock().lock();
+        try {
+            return new HashMap<>(pagesById);
+        } finally {
+            rwLock.readLock().unlock();
+        }
+    }
+
+    public List<com.cortex.core.SearchResult> search(String rawQuery, int limit) {
         if (rawQuery == null || rawQuery.trim().isEmpty()) {
             return Collections.emptyList();
         }
 
-        ParsedQuery query = parseQuery(rawQuery);
-        List<String> searchTerms = query.terms;
+        rwLock.readLock().lock();
+        try {
+            ParsedQuery query = parseQuery(rawQuery);
+            List<String> searchTerms = query.terms;
 
-        int totalDocs = pagesById.size();
-        if (totalDocs == 0) return Collections.emptyList();
+            int totalDocs = pagesById.size();
+            if (totalDocs == 0) return Collections.emptyList();
 
-        double avgDl = docLengths.values().stream().mapToInt(Integer::intValue).average().orElse(100.0);
+            double avgDl = docLengths.values().stream().mapToInt(Integer::intValue).average().orElse(100.0);
 
-        Map<String, Double> scores = new HashMap<>();
-        Map<String, List<String>> matchedTermsPerDoc = new HashMap<>();
+            Map<String, Double> scores = new HashMap<>();
+            Map<String, List<String>> matchedTermsPerDoc = new HashMap<>();
 
-        // Filter candidate documents
-        Collection<MemoryPage> candidates = pagesById.values().stream()
-                .filter(page -> matchesFilters(page, query))
-                .toList();
-
-        if (searchTerms.isEmpty()) {
-            // Se apenas filtros foram especificados (ex: type:rule), retorna com score baseado em recência
-            return candidates.stream()
-                    .map(p -> new SearchResult(p, computeRecencyBoost(p), generateSnippet(p.getContent(), List.of()), List.of()))
-                    .sorted(Comparator.comparingDouble(SearchResult::getScore).reversed())
-                    .limit(limit > 0 ? limit : 20)
+            // Filter candidate documents
+            Collection<MemoryPage> candidates = pagesById.values().stream()
+                    .filter(page -> matchesFilters(page, query))
                     .toList();
-        }
 
-        for (String term : searchTerms) {
-            Set<String> matchingDocIds = invertedIndex.getOrDefault(term, Collections.emptySet());
-            int docFreq = matchingDocIds.size();
-            double idf = Math.log(1.0 + (totalDocs - docFreq + 0.5) / (docFreq + 0.5));
+            if (searchTerms.isEmpty()) {
+                return candidates.stream()
+                        .map(p -> new com.cortex.core.SearchResult(p, computeRecencyBoost(p), generateSnippet(p.getContent(), List.of()), List.of()))
+                        .sorted(Comparator.comparingDouble(com.cortex.core.SearchResult::getScore).reversed())
+                        .limit(limit > 0 ? limit : 20)
+                        .toList();
+            }
 
-            for (MemoryPage page : candidates) {
-                String docId = page.getId();
-                Map<String, Integer> freqs = docTermFrequencies.get(docId);
-                if (freqs != null && freqs.containsKey(term)) {
-                    int tf = freqs.get(term);
-                    int dl = docLengths.getOrDefault(docId, 1);
-                    double bm25 = idf * ((tf * (K1 + 1.0)) / (tf + K1 * (1.0 - B + B * (dl / avgDl))));
+            for (String term : searchTerms) {
+                Set<String> matchingDocIds = invertedIndex.getOrDefault(term, Collections.emptySet());
+                int docFreq = matchingDocIds.size();
+                double idf = Math.log(1.0 + (totalDocs - docFreq + 0.5) / (docFreq + 0.5));
 
-                    scores.put(docId, scores.getOrDefault(docId, 0.0) + bm25);
-                    matchedTermsPerDoc.computeIfAbsent(docId, k -> new ArrayList<>()).add(term);
+                for (MemoryPage page : candidates) {
+                    String docId = page.getId();
+                    Map<String, Integer> freqs = docTermFrequencies.get(docId);
+                    if (freqs != null && freqs.containsKey(term)) {
+                        int tf = freqs.get(term);
+                        int dl = docLengths.getOrDefault(docId, 1);
+                        double bm25 = idf * ((tf * (K1 + 1.0)) / (tf + K1 * (1.0 - B + B * (dl / avgDl))));
+
+                        scores.put(docId, scores.getOrDefault(docId, 0.0) + bm25);
+                        matchedTermsPerDoc.computeIfAbsent(docId, k -> new ArrayList<>()).add(term);
+                    }
                 }
             }
-        }
 
-        List<SearchResult> results = new ArrayList<>();
-        for (Map.Entry<String, Double> entry : scores.entrySet()) {
-            String docId = entry.getKey();
-            MemoryPage page = pagesById.get(docId);
-            if (page == null) continue;
+            List<com.cortex.core.SearchResult> results = new ArrayList<>();
+            for (Map.Entry<String, Double> entry : scores.entrySet()) {
+                String docId = entry.getKey();
+                MemoryPage page = pagesById.get(docId);
+                if (page == null) continue;
 
-            double finalScore = entry.getValue();
+                double finalScore = entry.getValue();
 
-            // Multi-term coverage boost (documents matching more distinct query terms receive higher score)
-            List<String> matched = matchedTermsPerDoc.getOrDefault(docId, List.of());
-            long distinctMatched = matched.stream().distinct().count();
-            double coverageBoost = 1.0 + 0.5 * ((double) distinctMatched / searchTerms.size());
-            finalScore *= coverageBoost;
+                // Multi-term coverage boost
+                List<String> matched = matchedTermsPerDoc.getOrDefault(docId, List.of());
+                long distinctMatched = matched.stream().distinct().count();
+                double coverageBoost = 1.0 + 0.5 * ((double) distinctMatched / searchTerms.size());
+                finalScore *= coverageBoost;
 
-            // Status weighting
-            if ("superseded".equalsIgnoreCase(page.getStatus())) {
-                finalScore *= 0.3;
+                // Status weighting
+                if ("superseded".equalsIgnoreCase(page.getStatus())) {
+                    finalScore *= 0.3;
+                }
+
+                // Type boost
+                if (page.getType() == MemoryType.RULE || page.getType() == MemoryType.GOTCHA) {
+                    finalScore *= 1.3;
+                }
+
+                // Recency boost
+                finalScore += computeRecencyBoost(page);
+
+                String snippet = generateSnippet(page.getContent(), matched);
+
+                results.add(new com.cortex.core.SearchResult(page, finalScore, snippet, matched));
             }
 
-            // Type boost
-            if (page.getType() == MemoryType.RULE || page.getType() == MemoryType.GOTCHA) {
-                finalScore *= 1.3;
-            }
-
-            // Recency boost
-            finalScore += computeRecencyBoost(page);
-
-            String snippet = generateSnippet(page.getContent(), matched);
-
-            results.add(new SearchResult(page, finalScore, snippet, matched));
+            results.sort(Comparator.comparingDouble(com.cortex.core.SearchResult::getScore).reversed());
+            return results.stream().limit(limit > 0 ? limit : 20).toList();
+        } finally {
+            rwLock.readLock().unlock();
         }
-
-        results.sort(Comparator.comparingDouble(SearchResult::getScore).reversed());
-        return results.stream().limit(limit > 0 ? limit : 20).toList();
     }
 
     private boolean matchesFilters(MemoryPage page, ParsedQuery query) {
@@ -245,7 +278,6 @@ public class InMemoryLexicalIndex {
         if (text == null || text.trim().isEmpty()) return Collections.emptyList();
         List<String> tokens = new ArrayList<>();
         
-        // 1. Regex de palavras completas
         Matcher m = Pattern.compile("[a-zA-Z0-9_\\-áéíóúãõâêîôûçÁÉÍÓÚÃÕÂÊÎÔÛÇ]{2,}").matcher(text);
         while (m.find()) {
             String rawToken = m.group();
@@ -254,7 +286,6 @@ public class InMemoryLexicalIndex {
                 tokens.add(lower);
             }
 
-            // 2. CamelCase splitting (ex: DeserializationFeature -> deserialization, feature)
             String[] camelParts = rawToken.split("(?<!(^|[A-Z]))(?=[A-Z])|(?<!^)(?=[A-Z][a-z])");
             if (camelParts.length > 1) {
                 for (String part : camelParts) {
@@ -265,7 +296,6 @@ public class InMemoryLexicalIndex {
                 }
             }
 
-            // 3. Hyphen / underscore splitting
             if (rawToken.contains("-") || rawToken.contains("_")) {
                 String[] subParts = rawToken.split("[\\-_]");
                 for (String part : subParts) {
@@ -305,5 +335,11 @@ public class InMemoryLexicalIndex {
         String tagFilter;
         String statusFilter;
         List<String> terms = new ArrayList<>();
+    }
+
+    public static class SearchResult extends com.cortex.core.SearchResult {
+        public SearchResult(MemoryPage page, double score, String snippet, List<String> matchedTerms) {
+            super(page, score, snippet, matchedTerms);
+        }
     }
 }

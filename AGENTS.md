@@ -29,3 +29,13 @@ Este repositório é governado pelas regras do **Cortex** e pelas definições c
 ---
 
 Para mais regras específicas e skills ativas do projeto, consulte a pasta [.agents/](file:///g:/Dev/Projetos/cortex/.agents) e o arquivo [.agents/AGENTS.md](file:///g:/Dev/Projetos/cortex/.agents/AGENTS.md).
+
+## Fluxo de desenvolvimento — SDD
+
+Este projeto segue **Spec Driven Development**: toda mudança de comportamento nasce de uma spec
+em `specs/NNN-nome.md`, **antes** do código. As regras, a convenção de nomes e o **índice de
+specs** (que é o changelog do projeto) estão em `specs/README.md` — leia-o antes de implementar.
+
+- **Sem spec, sem código.** Se o pedido muda o que o sistema faz, o primeiro entregável é a spec.
+- Critérios de aceite (`CA-n`) são afirmações **verificáveis**; testes citam o número no nome.
+- Spec e implementação são revisadas no **mesmo PR**.
