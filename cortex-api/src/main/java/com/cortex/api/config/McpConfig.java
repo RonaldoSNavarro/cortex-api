@@ -27,6 +27,7 @@ import org.springframework.context.annotation.Configuration;
 import reactor.core.publisher.Mono;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -255,19 +256,45 @@ public class McpConfig {
                 }
             }
 
+            private void writeJsonResponse(
+                    HttpServletResponse resp,
+                    int statusCode,
+                    String json,
+                    String protocolVersion,
+                    String sessionId
+            ) throws IOException {
+                byte[] bytes = json.getBytes(StandardCharsets.UTF_8);
+                resp.setStatus(statusCode);
+                resp.setContentType("application/json");
+                resp.setCharacterEncoding("UTF-8");
+                resp.setContentLength(bytes.length);
+                if (protocolVersion != null && !protocolVersion.isBlank()) {
+                    resp.setHeader("mcp-protocol-version", protocolVersion);
+                }
+                if (sessionId != null && !sessionId.isBlank()) {
+                    resp.setHeader("mcp-session-id", sessionId);
+                }
+                var os = resp.getOutputStream();
+                os.write(bytes);
+                os.flush();
+            }
+
             @Override
             protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
+                final String clientProtocolVersion = req.getHeader("mcp-protocol-version");
+                final String clientSessionId = req.getHeader("mcp-session-id");
+
                 // 1. Read request body synchronously on the Servlet thread BEFORE starting AsyncContext (Spec 001 CA-1)
                 final String body;
                 try {
                     body = req.getReader().readAllAsString();
                 } catch (Exception e) {
-                    writeParseError(resp, "Failed to read request body");
+                    writeParseError(resp, "Failed to read request body", clientProtocolVersion, clientSessionId);
                     return;
                 }
 
                 if (body == null || body.isBlank()) {
-                    writeParseError(resp, "Empty request body");
+                    writeParseError(resp, "Empty request body", clientProtocolVersion, clientSessionId);
                     return;
                 }
 
@@ -275,12 +302,12 @@ public class McpConfig {
                 try {
                     jsonNode = mapper.readTree(body);
                 } catch (Exception e) {
-                    writeParseError(resp, "Malformed JSON payload");
+                    writeParseError(resp, "Malformed JSON payload", clientProtocolVersion, clientSessionId);
                     return;
                 }
 
                 if (jsonNode == null || !jsonNode.isObject()) {
-                    writeParseError(resp, "JSON-RPC payload must be a JSON object");
+                    writeParseError(resp, "JSON-RPC payload must be a JSON object", clientProtocolVersion, clientSessionId);
                     return;
                 }
 
@@ -289,6 +316,13 @@ public class McpConfig {
                 final boolean hasId = jsonNode.has("id") && !jsonNode.get("id").isNull();
                 final boolean hasMethod = jsonNode.has("method") && jsonNode.get("method").isTextual();
                 final String method = hasMethod ? jsonNode.get("method").asText() : null;
+
+                String bodyProtocolVersion = "initialize".equals(method)
+                        ? jsonNode.path("params").path("protocolVersion").asText(null)
+                        : null;
+                final String requestedProtocolVersion = (bodyProtocolVersion != null && !bodyProtocolVersion.isBlank())
+                        ? bodyProtocolVersion
+                        : clientProtocolVersion;
 
                 // 2. JSON-RPC Notifications (no "id" field): respond immediately with 202 Accepted and empty body (Spec 001 CA-6, CA-7)
                 if (hasMethod && !hasId) {
@@ -309,6 +343,12 @@ public class McpConfig {
                     }
                     resp.setStatus(HttpServletResponse.SC_ACCEPTED);
                     resp.setContentLength(0);
+                    if (requestedProtocolVersion != null && !requestedProtocolVersion.isBlank()) {
+                        resp.setHeader("mcp-protocol-version", requestedProtocolVersion);
+                    }
+                    if (clientSessionId != null && !clientSessionId.isBlank()) {
+                        resp.setHeader("mcp-session-id", clientSessionId);
+                    }
                     return;
                 }
 
@@ -321,10 +361,7 @@ public class McpConfig {
                     errorObj.put("code", -32601);
                     errorObj.put("message", "Method not found");
 
-                    resp.setContentType("application/json");
-                    resp.setCharacterEncoding("UTF-8");
-                    resp.setStatus(HttpServletResponse.SC_OK);
-                    resp.getWriter().print(mapper.writeValueAsString(errorResp));
+                    writeJsonResponse(resp, HttpServletResponse.SC_OK, mapper.writeValueAsString(errorResp), requestedProtocolVersion, clientSessionId);
                     return;
                 }
 
@@ -338,9 +375,6 @@ public class McpConfig {
                 // 4. Rewrite request "id" to a unique internal correlation ID to prevent concurrent ID collisions (Spec 001 CA-3)
                 final JsonNode originalIdNode = hasId ? jsonNode.get("id").deepCopy() : null;
                 final String internalCorrelationId = hasId ? "req-" + UUID.randomUUID() : null;
-                final String requestedProtocolVersion = "initialize".equals(method)
-                        ? jsonNode.path("params").path("protocolVersion").asText(null)
-                        : null;
 
                 final McpSchema.JSONRPCMessage message;
                 try {
@@ -352,7 +386,7 @@ public class McpConfig {
                         message = McpSchema.deserializeJsonRpcMessage(mapper, body);
                     }
                 } catch (Exception e) {
-                    writeParseError(resp, "Invalid JSON-RPC message structure");
+                    writeParseError(resp, "Invalid JSON-RPC message structure", requestedProtocolVersion, clientSessionId);
                     return;
                 }
 
@@ -383,6 +417,12 @@ public class McpConfig {
                                             if (!asyncResp.isCommitted()) {
                                                 asyncResp.setStatus(HttpServletResponse.SC_ACCEPTED);
                                                 asyncResp.setContentLength(0);
+                                                if (requestedProtocolVersion != null && !requestedProtocolVersion.isBlank()) {
+                                                    asyncResp.setHeader("mcp-protocol-version", requestedProtocolVersion);
+                                                }
+                                                if (clientSessionId != null && !clientSessionId.isBlank()) {
+                                                    asyncResp.setHeader("mcp-session-id", clientSessionId);
+                                                }
                                             }
                                         } else {
                                             log.error(">>> [POST] Error waiting for response correlation ID: {}", internalCorrelationId, ex);
@@ -402,10 +442,13 @@ public class McpConfig {
                                                 requestedProtocolVersion
                                         );
                                         log.debug(">>> [POST] Captured Response: {}", responseJson);
-                                        asyncResp.setContentType("application/json");
-                                        asyncResp.setCharacterEncoding("UTF-8");
-                                        asyncResp.setStatus(HttpServletResponse.SC_OK);
-                                        asyncResp.getWriter().print(responseJson);
+                                        writeJsonResponse(
+                                                asyncResp,
+                                                HttpServletResponse.SC_OK,
+                                                responseJson,
+                                                requestedProtocolVersion,
+                                                clientSessionId
+                                        );
                                     }
                                 } catch (Exception innerEx) {
                                     log.error(">>> [POST] Exception writing response: {}", innerEx.getMessage(), innerEx);
@@ -420,6 +463,12 @@ public class McpConfig {
                             HttpServletResponse asyncResp = (HttpServletResponse) asyncContext.getResponse();
                             asyncResp.setStatus(HttpServletResponse.SC_ACCEPTED);
                             asyncResp.setContentLength(0);
+                            if (requestedProtocolVersion != null && !requestedProtocolVersion.isBlank()) {
+                                asyncResp.setHeader("mcp-protocol-version", requestedProtocolVersion);
+                            }
+                            if (clientSessionId != null && !clientSessionId.isBlank()) {
+                                asyncResp.setHeader("mcp-session-id", clientSessionId);
+                            }
                             asyncContext.complete();
                         }
                     } catch (Exception e) {
@@ -439,17 +488,14 @@ public class McpConfig {
                 });
             }
 
-            private void writeParseError(HttpServletResponse resp, String detail) throws IOException {
-                resp.setStatus(HttpServletResponse.SC_BAD_REQUEST);
-                resp.setContentType("application/json");
-                resp.setCharacterEncoding("UTF-8");
+            private void writeParseError(HttpServletResponse resp, String detail, String protocolVersion, String sessionId) throws IOException {
                 ObjectNode errResp = mapper.createObjectNode();
                 errResp.put("jsonrpc", "2.0");
                 errResp.putNull("id");
                 ObjectNode err = errResp.putObject("error");
                 err.put("code", -32700);
                 err.put("message", "Parse error: " + detail);
-                resp.getWriter().print(mapper.writeValueAsString(errResp));
+                writeJsonResponse(resp, HttpServletResponse.SC_BAD_REQUEST, mapper.writeValueAsString(errResp), protocolVersion, sessionId);
             }
         };
 
